@@ -1,0 +1,15 @@
+{
+  "_comment": "Saved MCP server entry for OpenClaw. Equivalent CLI: openclaw mcp add medical-doctor -- medical-doctor-mcp. Check the OpenClaw MCP docs for the current config location.",
+  "mcp": {
+    "servers": {
+      "medical-doctor": {
+        "command": "medical-doctor-mcp",
+        "args": [],
+        "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" }
+      },
+      "medical-doctor-remote": {
+        "url": "http://localhost:8000/mcp"
+      }
+    }
+  }
+}

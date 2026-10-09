@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "medical-doctor": {
+      "command": "medical-doctor-mcp",
+      "args": [],
+      "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" }
+    }
+  }
+}
