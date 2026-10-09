@@ -20,7 +20,8 @@ async def test_lists_tools_resources_prompts():
         tools = {t.name for t in (await client.list_tools()).tools}
         assert {"consult", "red_flag_screen", "calc_meld_na", "drug_label", "pubmed_search", "get_skill"} <= tools
         prompts = {p.name for p in (await client.list_prompts()).prompts}
-        assert {"attending_consult", "medication_review"} <= prompts
+        assert {"attending_consult", "pediatric_consult", "medication_review"} <= prompts
+        assert {"calc_pediatric_vital_signs", "calc_weight_based_dose", "calc_pecarn_head_trauma"} <= tools
 
 
 async def test_calculator_via_mcp():
@@ -41,6 +42,8 @@ async def test_skill_tool_and_resource():
         assert "CHA2DS2-VASc" in r.content[0].text
         res = await client.read_resource("skill://pediatrics")
         assert "Reye" in res.contents[0].text
+        res = await client.read_resource("skill://neonatology")
+        assert "BRUE" in res.contents[0].text
 
 
 async def test_consult_without_credentials_returns_protocol(monkeypatch):

@@ -32,6 +32,8 @@ class RedFlagRule:
     urgency: Urgency
     patterns: tuple[str, ...]
     action: str
+    # False for findings that are themselves phrased negatively ("no wet diaper").
+    negatable: bool = True
 
 
 @dataclass
@@ -182,6 +184,77 @@ RULES: tuple[RedFlagRule, ...] = (
         "Any fever >=38.0°C (100.4°F) in an infant <3 months (90 days) needs same-hour emergency evaluation.",
     ),
     RedFlagRule(
+        "peds_respiratory_distress",
+        "Respiratory distress in a child",
+        "emergency",
+        (
+            r"grunting|head bobbing|nasal flaring|tracheal tug",
+            r"(chest|rib|ribs)[^.]{0,20}(sucking in|pulling in|caving in)|(severe|deep) retractions",
+            r"(stridor|drooling)[^.]{0,60}(at rest|can'?t swallow|tripod)",
+        ),
+        CALL_EMS + " Keep the child calm and upright in a caregiver's arms; do not examine the throat if drooling/stridor.",
+    ),
+    RedFlagRule(
+        "sick_infant",
+        "Seriously ill infant or young child",
+        "emergency",
+        (
+            r"(baby|infant|newborn|toddler|child|son|daughter)[^.]{0,80}(floppy|limp|unrousable|won'?t wake|hard to wake|lethargic|inconsolable|high[- ]pitched cry|bulging (soft spot|fontanelle))",
+            r"bulging (soft spot|fontanelle)",
+            r"(baby|infant|newborn)[^.]{0,60}(not feeding|refusing (all )?feeds|stopped feeding|turned blue|stopped breathing|pause in breathing)",
+        ),
+        CALL_EMS + " Lethargy, poor feeding, or color change in an infant can be sepsis, meningitis, or a cardiac problem.",
+    ),
+    RedFlagRule(
+        "bilious_vomiting",
+        "Bilious (green) vomiting or possible intussusception",
+        "emergency",
+        (r"(green|bilious|bile)[^.]{0,20}vomit|vomit(ing)?[^.]{0,20}(green|bile)", r"currant[- ]jelly", r"intussuscep"),
+        "Emergency surgical evaluation: malrotation with volvulus or intussusception until proven otherwise.",
+    ),
+    RedFlagRule(
+        "ingestion",
+        "Toxic or dangerous ingestion",
+        "emergency",
+        (
+            r"(swallowed|ate|ingested|chewed)[^.]{0,40}(button battery|coin battery|magnets?|detergent pod|laundry pod|bleach|drain cleaner|pills?|tablets?|medicine|medication|vape liquid|nicotine|gummies|edibles?|lamp oil|antifreeze)",
+            r"button battery",
+            r"poison(ed|ing)",
+        ),
+        "US Poison Control 1-800-222-1222 (or local poison center) now; call emergency services if symptomatic. "
+        "Button batteries and multiple magnets need emergency removal even if the child looks well. Do not induce vomiting.",
+    ),
+    RedFlagRule(
+        "peds_dehydration",
+        "Possible significant dehydration in a child",
+        "urgent",
+        (
+            r"(no|not had a|hasn'?t had a) wet (diaper|nappy)",
+            r"(no|not) (peed|urinated)[^.]{0,30}([8-9]|1[0-9]|twelve|eight) hours",
+            r"sunken (soft spot|fontanelle|eyes)",
+            r"no tears when crying",
+        ),
+        "Same-day evaluation; emergency care if lethargic, breathing fast, cold hands/feet, or unable to keep any fluids down.",
+        negatable=False,
+    ),
+    RedFlagRule(
+        "kawasaki_prolonged_fever",
+        "Prolonged fever in a child (Kawasaki disease / MIS-C to exclude)",
+        "urgent",
+        (
+            r"fever[^.]{0,30}(for )?(5|6|7|8|9|10|five|six|seven|eight|nine|ten|over a) (days|week)",
+            r"(red|cracked|strawberry) (lips|tongue)[^.]{0,80}(fever|rash)|kawasaki|mis-c",
+        ),
+        "Same-day pediatric evaluation: Kawasaki disease needs IVIG within 10 days of fever onset to prevent coronary aneurysms.",
+    ),
+    RedFlagRule(
+        "neonatal_jaundice",
+        "Jaundice in a newborn",
+        "urgent",
+        (r"(newborn|baby|infant|neonat)[^.]{0,60}(yellow|jaundice)", r"(yellow|jaundice)[^.]{0,60}(newborn|baby|infant)"),
+        "Same-day bilirubin check; EMERGENCY if within the first 24 hours of life, poor feeding, lethargy, arching, or high-pitched cry.",
+    ),
+    RedFlagRule(
         "seizure_loc",
         "Seizure, unresponsiveness, or acute confusion",
         "emergency",
@@ -262,7 +335,7 @@ def screen(text: str) -> TriageResult:
     masked = _mask_negations(text)
     for rule in RULES:
         for pat in rule.patterns:
-            m = re.search(pat, masked, re.IGNORECASE)
+            m = re.search(pat, masked if rule.negatable else text, re.IGNORECASE)
             if m:
                 hits.append(RedFlagHit(rule.id, rule.condition, rule.urgency, text[m.start() : m.end()], rule.action))
                 break

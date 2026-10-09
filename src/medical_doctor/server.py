@@ -9,7 +9,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import TextContent, ToolAnnotations
 
-from . import calculators, physician, safety, sources
+from . import calculators, pediatric, physician, safety, sources
 from .skills import load_skills
 
 DISCLAIMER = (
@@ -24,6 +24,7 @@ Workflow for any health question:
 1. Call `red_flag_screen` on the user's words first. If urgency is "emergency", tell the user to get
    emergency care immediately before anything else.
 2. For a full assessment call `consult` (returns a structured attending consult note).
+   It covers adults and children (pediatric attending for patients under 18; give age and weight).
    If `consult` reports no model credentials, follow the returned `protocol` yourself, using the
    calculator, drug-label, PubMed and trials tools here, and the skills (`list_skills`/`get_skill`).
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
@@ -58,13 +59,15 @@ def red_flag_screen(text: str) -> dict[str, Any]:
 async def consult(
     case: str,
     question: str | None = None,
-    audience: Literal["clinician", "patient"] = "clinician",
+    audience: Literal["clinician", "patient", "caregiver"] = "clinician",
 ) -> dict[str, Any]:
-    """Full attending-physician consult. Give the whole case: age, sex, pregnancy status, chief complaint,
+    """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
+    pediatrics, incl. neonates and adolescents). Give the whole case: age (days/months for infants), weight
+    for children, sex, pregnancy status, chief complaint,
     history of present illness, past history, medications, allergies, vitals, exam, labs/imaging.
     Returns a structured consult note: urgency, problem representation, ranked differential with
     can't-miss diagnoses, recommended workup, evidence-cited management, and a patient explanation.
-    audience='patient' tailors language for a layperson."""
+    audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child."""
     triage = safety.screen(" ".join(filter(None, [case, question]))).to_dict()
     if not physician.has_credentials():
         return {
@@ -113,7 +116,7 @@ async def _execute_for_physician(name: str, arguments: dict[str, Any]) -> str:
 
 # --- Calculators ---------------------------------------------------------
 
-for _name, _fn in calculators.CALCULATORS.items():
+for _name, _fn in {**calculators.CALCULATORS, **pediatric.PEDIATRIC_CALCULATORS}.items():
     mcp.add_tool(
         _fn,
         name=f"calc_{_name}",
@@ -204,6 +207,18 @@ def attending_consult_prompt(case: str, audience: str = "clinician") -> str:
         "drug_interaction_check and pubmed_search tools to verify every score, dose and claim, and get_skill for "
         "the relevant specialty playbooks.\n\n"
         f"<case>\n{case}\n</case>"
+    )
+
+
+@mcp.prompt(name="pediatric_consult", description="Pediatric attending consult for an infant, child or adolescent.")
+def pediatric_consult_prompt(case: str, age: str, weight_kg: str = "unknown", audience: str = "caregiver") -> str:
+    return (
+        f"{physician.CHARTER}\n\nYou are acting as the pediatric attending. Audience: {audience}\n\n"
+        "First call red_flag_screen on the case and calc_pediatric_vital_signs with any vitals. Load the pediatric "
+        "skills with get_skill (pediatrics, pediatric-emergency, neonatology, pediatric-infectious-disease, "
+        "well-child-development). Use pediatric decision rules and calc_weight_based_dose for any dose; if weight is "
+        "unknown, ask for it (or use calc_estimated_weight_by_age only in an emergency).\n\n"
+        f"<age>{age}</age>\n<weight_kg>{weight_kg}</weight_kg>\n<case>\n{case}\n</case>"
     )
 
 

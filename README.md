@@ -6,7 +6,7 @@ It has three layers:
 
 1. **A deterministic safety layer.** A red-flag screen catches emergencies such as stroke, ACS, sepsis, anaphylaxis, suicide risk, obstetric and neonatal emergencies, and cauda equina. It runs before any model reasoning and still works when no LLM is available.
 2. **Verified tools.** There are 18 validated clinical calculators, plus live FDA drug labels, label-based interaction screening, RxNorm, PubMed, and ClinicalTrials.gov. The physician is required to compute scores and confirm doses with these tools instead of answering from memory.
-3. **The attending.** Claude Opus 5.5 runs with a physician charter and a library of 16 specialty **skills**. It produces a structured consult note: urgency, problem representation, a ranked differential with can't-miss diagnoses, recommended workup, evidence-cited management, and a plain-language explanation for the patient.
+3. **The attending.** Claude Opus 5.5 runs as a dual-boarded **internal medicine + pediatrics (Med-Peds)** attending, with depth in pediatric emergency medicine and neonatology. It has a physician charter and a library of 20 specialty **skills**, and for anyone under 18 it switches to pediatric reasoning, norms, decision rules and weight-based dosing. It produces a structured consult note: urgency, problem representation, a ranked differential with can't-miss diagnoses, recommended workup, evidence-cited management, and a plain-language explanation for the patient.
 
 > ⚠️ **Decision support, not a doctor.** This software does not diagnose, prescribe, or replace a licensed clinician who can examine the patient. It is not a medical device and has not been cleared by the FDA or any other regulator. Do not use it for real patient care without clinical oversight, validation, and the regulatory and privacy review that applies to you (HIPAA, GDPR). In an emergency, call your local emergency number.
 
@@ -14,9 +14,10 @@ It has three layers:
 
 | Tool | Purpose |
 |---|---|
-| `consult` | Full attending consult note (`audience`: `clinician` or `patient`) |
+| `consult` | Full attending consult note for adults and children (`audience`: `clinician`, `patient`, or `caregiver` for a parent) |
 | `red_flag_screen` | Deterministic emergency triage of free text. Call it first. |
 | `calc_*` (18) | eGFR (CKD-EPI 2021), Cockcroft-Gault, CHA2DS2-VASc, HAS-BLED, HEART, QTc, MAP, Wells PE, PERC, CURB-65, qSOFA, Centor/McIsaac, MELD-Na, GCS, anion gap, corrected Ca, corrected Na, BMI |
+| `calc_*` pediatric (10) | Age-normal vital signs (PALS), weight-based dose → mg and mL with adult caps, Holliday-Segar fluids, bedside Schwartz eGFR, APLS weight estimate, PECARN head trauma, PECARN febrile infant, Westley croup, Clinical Dehydration Scale, Pediatric Appendicitis Score |
 | `drug_label` | FDA prescribing information: boxed warning, dosing, contraindications, pregnancy, and more |
 | `drug_interaction_check` | Pairwise screen built from each drug's FDA label interaction section |
 | `normalize_drug` | Maps brand or misspelled names to RxNorm ingredients |
@@ -24,11 +25,15 @@ It has three layers:
 | `clinical_trials_search` | Recruiting trials from ClinicalTrials.gov |
 | `list_skills` / `get_skill` | The specialty playbooks |
 
-The server also exposes **prompts** (`attending_consult`, `medication_review`) and **resources** (`skill://{name}`).
+The server also exposes **prompts** (`attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
 
 ### Skills (Agent Skills format: `skills/<name>/SKILL.md`)
 
-clinical-reasoning · emergency-triage · evidence-based-medicine · pharmacotherapy · lab-interpretation · cardiology · pulmonology · infectious-disease · endocrinology · neurology · gastroenterology · pediatrics · obstetrics-gynecology · psychiatry · geriatrics · patient-communication
+**Adult & general:** clinical-reasoning · emergency-triage · evidence-based-medicine · pharmacotherapy · lab-interpretation · cardiology · pulmonology · infectious-disease · endocrinology · neurology · gastroenterology · obstetrics-gynecology · psychiatry · geriatrics · patient-communication
+
+**Pediatrics:** pediatrics (core: history, norms, dosing safety, never-in-children list) · pediatric-emergency (PALS, sepsis, seizures, PECARN, ingestions, abuse recognition) · neonatology (jaundice, febrile neonate/HSV, BRUE, feeding, safe sleep) · pediatric-infectious-disease (fever by age, AOM, strep, UTI, pneumonia, Kawasaki, measles) · well-child-development (growth, milestones, autism/ADHD, screening, immunizations, adolescent health)
+
+The red-flag screen also catches pediatric danger signs: infant respiratory distress, a floppy or lethargic baby, bilious vomiting or intussusception, button-battery and other dangerous ingestions (with Poison Control), dehydration in infants, prolonged fever (Kawasaki), and newborn jaundice.
 
 Claude Code and OpenClaw both use the Agent Skills standard (a folder containing `SKILL.md` with `name` and `description` frontmatter), so the same folders work in this server, in Claude Code, and in OpenClaw.
 
@@ -99,8 +104,8 @@ The consult uses the server-side refusal fallback (`fallbacks: "default"`). If a
 ```
 case ─► red_flag_screen (regex, negation-aware) ─┐
                                                  ▼
-        Claude Opus 5.5 + physician charter + 16 skills (cached)
-                │  tool loop: calc_* · drug_label · interactions · PubMed · trials · web search (guidelines)
+        Claude Opus 5.5 (Med-Peds attending) + charter + 20 skills (cached)
+                │  tool loop: calc_* (adult + pediatric) · drug_label · interactions · PubMed · trials · web search (guidelines)
                 ▼
         consult note: Urgency → Problem representation → Differential (⚠️ can't-miss)
                       → Evaluation → Management (cited) → What would change it
@@ -120,4 +125,4 @@ pip install -e '.[dev]'
 pytest
 ```
 
-Tests cover each calculator against published reference values, the red-flag triage (including negation handling), the MCP surface, the consult tool loop (with a fake Claude client), and the data-source parsers (with mocked HTTP).
+Tests cover each adult and pediatric calculator against published reference values, the red-flag triage (including negation handling), the MCP surface, the consult tool loop (with a fake Claude client), and the data-source parsers (with mocked HTTP).

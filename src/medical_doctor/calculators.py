@@ -33,7 +33,7 @@ def egfr_ckd_epi_2021(creatinine_mg_dl: float, age: int, sex: Sex) -> dict[str, 
     """Race-free CKD-EPI 2021 creatinine equation (mL/min/1.73m²)."""
     _require_positive(creatinine_mg_dl=creatinine_mg_dl, age=age)
     if age < 18:
-        raise ValueError("CKD-EPI is validated for adults (age >= 18); use bedside Schwartz for children")
+        raise ValueError("CKD-EPI is validated for adults (age >= 18); use calc_bedside_schwartz_egfr for children")
     female = sex == "female"
     kappa = 0.7 if female else 0.9
     alpha = -0.241 if female else -0.302
@@ -350,6 +350,8 @@ def meld_na(
 
 
 def glasgow_coma_scale(eye: int, verbal: int, motor: int) -> dict[str, Any]:
+    """Glasgow Coma Scale (eye 1-4, verbal 1-5, motor 1-6). For preverbal children use the pediatric verbal
+    scale: 5 coos/babbles, 4 irritable cry, 3 cries to pain, 2 moans to pain, 1 none."""
     if eye not in range(1, 5) or verbal not in range(1, 6) or motor not in range(1, 7):
         raise ValueError("eye 1-4, verbal 1-5, motor 1-6")
     total = eye + verbal + motor
@@ -431,7 +433,7 @@ def bmi(weight_kg: float, height_cm: float) -> dict[str, Any]:
     return _result(
         "Body mass index",
         b,
-        f"{cat} (WHO adult categories; Asian populations use lower cut-offs; not valid in pregnancy or children).",
+        f"{cat} (WHO adult categories; Asian populations use lower cut-offs; not valid in pregnancy; for ages 2-19 use CDC BMI-for-age percentiles, not adult categories).",
         "WHO Technical Report Series 894, 2000",
         units="kg/m²",
     )
