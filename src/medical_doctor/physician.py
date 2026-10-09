@@ -109,6 +109,7 @@ End with: "This is decision support, not a diagnosis. Confirm with a licensed cl
 """
 
 ToolExecutor = Callable[[str, dict[str, Any]], Awaitable[str]]
+Progress = Callable[[int, str], Awaitable[None]]
 
 
 def system_blocks() -> list[dict[str, Any]]:
@@ -149,8 +150,14 @@ async def run_consult(
     tools: list[dict[str, Any]],
     execute_tool: ToolExecutor,
     client: anthropic.AsyncAnthropic | None = None,
+    progress: Progress | None = None,
 ) -> dict[str, Any]:
     client = client or anthropic.AsyncAnthropic()
+
+    async def report(step: int, message: str) -> None:
+        # Keeps long consults alive in clients with idle timeouts (ChatGPT, claude.ai, IDEs).
+        if progress:
+            await progress(step, message)
     api_tools: list[dict[str, Any]] = list(tools)
     if WEB_SEARCH:
         api_tools.append(
@@ -159,7 +166,8 @@ async def run_consult(
     messages: list[dict[str, Any]] = [{"role": "user", "content": build_case_prompt(case, question, audience, triage)}]
     tool_calls: list[dict[str, Any]] = []
 
-    for _ in range(MAX_TOOL_ROUNDS):
+    await report(0, "Attending reviewing the case")
+    for round_no in range(MAX_TOOL_ROUNDS):
         async with client.beta.messages.stream(
             model=MODEL,
             max_tokens=64000,
@@ -183,6 +191,8 @@ async def run_consult(
         if response.stop_reason != "tool_use":
             break
 
+        names = [b.name for b in response.content if b.type == "tool_use"]
+        await report(round_no + 1, "Verifying with " + ", ".join(names))
         results = []
         for block in response.content:
             if block.type != "tool_use":

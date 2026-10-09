@@ -24,6 +24,8 @@ It has three layers:
 | `pubmed_search` / `pubmed_abstract` | Literature search, optionally limited to systematic reviews, RCTs, and guidelines |
 | `clinical_trials_search` | Recruiting trials from ClinicalTrials.gov |
 | `list_skills` / `get_skill` | The specialty playbooks |
+| `search` / `fetch` | Search across skills, calculators, and PubMed, then read a result (the convention ChatGPT connectors and deep research use) |
+| `whoami` | Shows the signed-in account, to confirm a connector works |
 
 The server also exposes **prompts** (`attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
 
@@ -47,27 +49,75 @@ export ANTHROPIC_API_KEY=sk-ant-...   # powers the `consult` tool
 
 Without an API key, every tool except `consult` works. In that case `consult` falls back to **protocol mode**: it returns the red-flag screen and the physician charter, and the calling agent (for example Claude Desktop) runs the consult itself using the server's tools and skills.
 
-## Use from Claude
+## Works with any AI tool
 
-**Claude Code**
+The server speaks standard MCP over **stdio** (local) and **Streamable HTTP** (remote, at `/mcp`). It works with ChatGPT, Claude (web, desktop, and Code), Microsoft Copilot Studio, Cursor, VS Code/Copilot, Windsurf, Gemini CLI, OpenAI Codex, OpenClaw, the OpenAI Responses API and Agents SDK, the Anthropic MCP connector, LangChain, n8n, and others. Clients that only support stdio can connect through `mcp-remote`.
+
+**→ Per-client setup: [docs/CLIENTS.md](docs/CLIENTS.md)**
+
+Quick starts:
 
 ```bash
+# Local, for one person (no auth needed)
 claude mcp add medical-doctor -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY -- medical-doctor-mcp
+
+# Remote: ChatGPT / claude.ai → Add custom connector → https://<your-host>/mcp → sign in with Google
+claude mcp add --transport http medical-doctor https://<your-host>/mcp
 ```
 
-To check in a shared setup instead, see [`examples/claude-code.mcp.json`](examples/claude-code.mcp.json).
+## Authentication (sign in with Google, GitHub, Microsoft, or SSO)
 
-**Claude Desktop**: merge [`examples/claude_desktop_config.json`](examples/claude_desktop_config.json) into your config.
+Remote deployments should always use authentication. Set `MEDICAL_DOCTOR_AUTH` to one of these:
 
-**Remote / any agent over HTTP**
+| Mode | What it does | Use when |
+|---|---|---|
+| `oauth` | **Built-in OAuth 2.1 authorization server.** Users sign in with Google, GitHub, Microsoft (Entra ID), or any OIDC provider (Okta, Auth0, Keycloak, Ping, Axiad, …). Supports discovery (RFC 9728/8414), Dynamic Client Registration (RFC 7591), PKCE, resource-bound tokens (RFC 8707), refresh rotation, and revocation. | ChatGPT, Claude, and IDEs connect with just a URL |
+| `jwt` | Accepts access tokens from **your existing authorization server**, validated against its JWKS (signature, `iss`, `aud`, `exp`). | You already run Auth0, Okta, Entra, Keycloak, WorkOS, Descope, or Stytch with DCR enabled |
+| `apikey` | Static bearer keys only. | Server-to-server agents and automation |
+| `none` | No authentication. | Local stdio or a localhost-only setup |
+
+API keys (`MEDICAL_DOCTOR_API_KEYS`) also work alongside `oauth` and `jwt`, for headless agents.
+
+### Set up Google sign-in (5 minutes)
+
+1. In Google Cloud Console, go to **APIs & Services → Credentials → Create OAuth client ID → Web application**.
+2. Add the authorized redirect URI `https://<your-host>/oauth/callback/google`.
+3. Run:
+   ```bash
+   export MEDICAL_DOCTOR_AUTH=oauth
+   export MEDICAL_DOCTOR_PUBLIC_URL=https://<your-host>
+   export GOOGLE_CLIENT_ID=... GOOGLE_CLIENT_SECRET=...
+   export MEDICAL_DOCTOR_ALLOWED_DOMAINS=yourcompany.com     # and/or MEDICAL_DOCTOR_ALLOWED_EMAILS=a@gmail.com,b@x.org
+   medical-doctor-mcp --transport http --host 0.0.0.0
+   ```
+
+Other providers work the same way, each with redirect URI `https://<your-host>/oauth/callback/<provider>`:
+- **GitHub:** OAuth App, using `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`.
+- **Microsoft:** a single-tenant app registration, using `MICROSOFT_CLIENT_ID` / `_SECRET` / `MICROSOFT_TENANT_ID`.
+- **Any OIDC provider:** `OIDC_ISSUER` / `OIDC_CLIENT_ID` / `OIDC_CLIENT_SECRET`.
+
+When more than one is configured, the sign-in page offers a button for each. All variables are listed in [`.env.example`](.env.example).
+
+**Security design**
+- **Closed by default.** The server refuses to start in `oauth` mode unless you set an allowlist (domains or emails), or explicitly opt in with `MEDICAL_DOCTOR_ALLOW_ANY_USER=1`. Every consult spends your Anthropic credits.
+- **Verified emails only.** The allowlist only accepts verified emails. Microsoft requires a specific tenant ID, because multi-tenant Entra apps return an unverified, user-editable `email` claim (the "nOAuth" issue).
+- **Consent screen.** Users always see a page naming the requesting app and its redirect host before going to Google. This follows the MCP security best practices for proxy-style servers and blocks confused-deputy attacks through maliciously registered clients. The page cannot be framed and sends a strict CSP.
+- **No upstream tokens reach clients.** Google, GitHub, and Microsoft tokens are never passed through. Clients get short-lived tokens bound to this server: 1 h access tokens, plus 30-day refresh tokens that rotate on every use.
+- **Hashed, single-use secrets.** Codes and tokens are stored only as SHA-256 hashes, in SQLite with `0600` permissions (`MEDICAL_DOCTOR_DB`). Authorization codes work once and expire in 5 minutes.
+- **No PHI in logs.** Audit logs record who ran a consult and the urgency level, never the clinical text.
+- **Per-user limit.** `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` caps consults per user to protect model spend.
+
+### Deploy
 
 ```bash
-medical-doctor-mcp --transport http --host 0.0.0.0 --port 8000   # endpoint: http://host:8000/mcp
-# or
-docker build -t medical-doctor-mcp . && docker run -p 8000:8000 -e ANTHROPIC_API_KEY medical-doctor-mcp
+docker build -t medical-doctor-mcp .
+docker run -p 8000:8000 -v md-data:/data --env-file .env medical-doctor-mcp     # → https://<your-host>/mcp
 ```
 
-The HTTP mode has **no built-in authentication**. Put it behind your gateway (OAuth, mTLS, or an API key) before you expose it anywhere.
+- Put it behind HTTPS (Cloud Run, Fly.io, Render, ECS, or Kubernetes with an ingress).
+- The built-in OAuth store is SQLite, so run **one instance** with a persistent `/data` volume.
+- To scale out horizontally, use `MEDICAL_DOCTOR_AUTH=jwt` with an external authorization server, plus `MEDICAL_DOCTOR_STATELESS=1`.
+- For a quick test without deploying, run `cloudflared tunnel --url http://localhost:8000`.
 
 ## Use with OpenClaw
 
@@ -96,6 +146,11 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_MAX_TOOL_ROUNDS` | `12` | Upper bound on tool calls per consult |
 | `MEDICAL_DOCTOR_SKILLS_DIR` | bundled | Use your own or extended skill library |
 | `NCBI_API_KEY`, `OPENFDA_API_KEY` | – | Optional; raise rate limits |
+| `MEDICAL_DOCTOR_AUTH` | `none` | `none` / `apikey` / `oauth` / `jwt` (see Authentication) |
+| `MEDICAL_DOCTOR_PUBLIC_URL` | – | Public base URL; required when auth is on |
+| `MEDICAL_DOCTOR_CORS_ORIGINS` | `*` | Origins allowed for browser-based clients |
+| `MEDICAL_DOCTOR_STATELESS` | `0` | `1` for load-balanced or serverless deployments |
+| `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | `0` (unlimited) | Per-user consult cap |
 
 The consult uses the server-side refusal fallback (`fallbacks: "default"`). If a safety classifier declines a legitimate clinical question, the request is retried on Anthropic's recommended fallback model. The whole skill library sits in a prompt-cached system block, so repeat consults pay roughly 10% of the input cost for it.
 
@@ -125,4 +180,4 @@ pip install -e '.[dev]'
 pytest
 ```
 
-Tests cover each adult and pediatric calculator against published reference values, the red-flag triage (including negation handling), the MCP surface, the consult tool loop (with a fake Claude client), and the data-source parsers (with mocked HTTP).
+Tests cover the full OAuth flow as ChatGPT and Claude run it (discovery, DCR, consent, Google sign-in, PKCE token exchange, refresh rotation, revocation, allowlist denial), JWT validation, API keys, each adult and pediatric calculator against published reference values, the red-flag triage (including negation handling), the MCP surface, the consult tool loop (with a fake Claude client), and the data-source parsers (with mocked HTTP).

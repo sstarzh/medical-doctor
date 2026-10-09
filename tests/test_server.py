@@ -130,3 +130,66 @@ async def test_consult_handles_refusal(monkeypatch):
     async with Client(mcp) as client:
         p = _payload(await client.call_tool("consult", {"case": "x"}))
     assert p["ok"] is False
+
+
+# --- ChatGPT-style search / fetch, progress, rate limit ---------------------
+
+
+async def test_search_and_fetch(monkeypatch):
+    from medical_doctor import sources
+
+    async def no_pubmed(*a, **k):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(sources, "pubmed_search", no_pubmed)
+    async with Client(mcp) as client:
+        res = _payload(await client.call_tool("search", {"query": "kawasaki fever child"}))["results"]
+        ids = [r["id"] for r in res]
+        assert "skill:pediatric-infectious-disease" in ids
+        assert all({"id", "title", "url"} <= set(r) for r in res)
+        doc = _payload(await client.call_tool("fetch", {"id": "skill:pediatric-infectious-disease"}))
+        assert "IVIG" in doc["text"] and doc["url"].startswith("https://")
+        calc = _payload(await client.call_tool("fetch", {"id": "calc:pecarn_head_trauma"}))
+        assert "calc_pecarn_head_trauma" in calc["text"]
+        assert (await client.call_tool("fetch", {"id": "nope:1"})).is_error
+
+
+async def test_all_tools_are_read_only_annotated():
+    # ChatGPT treats tools without readOnlyHint as write actions that need confirmation.
+    async with Client(mcp) as client:
+        for t in (await client.list_tools()).tools:
+            assert t.annotations and t.annotations.read_only_hint, t.name
+
+
+async def test_consult_reports_progress(monkeypatch):
+    tool_use = SimpleNamespace(type="tool_use", id="tu_1", name="calc_bmi", input={"weight_kg": 90, "height_cm": 180})
+    fake = FakeClient([_msg("tool_use", [tool_use]), _msg("end_turn", [SimpleNamespace(type="text", text="ok")])])
+    seen = []
+    original = physician.run_consult
+
+    async def patched(**kw):
+        inner = kw["progress"]
+
+        async def spy(step, message):
+            seen.append(message)
+            await inner(step, message)
+
+        return await original(**{**kw, "progress": spy}, client=fake)
+
+    monkeypatch.setattr(physician, "has_credentials", lambda: True)
+    monkeypatch.setattr(physician, "run_consult", patched)
+    async with Client(mcp) as client:
+        await client.call_tool("consult", {"case": "x"})
+    assert seen[0].startswith("Attending") and "calc_bmi" in seen[1]
+
+
+def test_rate_limiter():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from medical_doctor.server import RateLimiter
+
+    rl = RateLimiter(2)
+    rl.check("a"), rl.check("a"), rl.check("b")
+    with pytest.raises(ToolError):
+        rl.check("a")
+    RateLimiter(0).check("a")  # unlimited
