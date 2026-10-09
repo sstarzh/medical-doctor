@@ -49,10 +49,12 @@ class Settings:
     db_path: str = ""
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
+    max_session_lifetime: int = 90 * 24 * 3600  # absolute cap; refresh rotation never extends past it
     jwt_issuer: str = ""
     jwt_audience: str = ""
     jwt_jwks_url: str = ""
     jwt_required_scope: str = ""
+    jwt_trust_unverified_email: bool = False
     cors_origins: tuple[str, ...] = ("*",)
     allowed_hosts: tuple[str, ...] = ()
     consult_limit_per_hour: int = 0
@@ -156,10 +158,12 @@ def load_settings() -> Settings:
         db_path=e("MEDICAL_DOCTOR_DB", os.path.expanduser("~/.medical-doctor/auth.db")),
         access_token_ttl=int(e("MEDICAL_DOCTOR_ACCESS_TOKEN_TTL", "3600")),
         refresh_token_ttl=int(e("MEDICAL_DOCTOR_REFRESH_TOKEN_TTL", str(30 * 24 * 3600))),
+        max_session_lifetime=int(float(e("MEDICAL_DOCTOR_MAX_SESSION_DAYS", "90")) * 24 * 3600),
         jwt_issuer=e("MEDICAL_DOCTOR_JWT_ISSUER", "").rstrip("/"),
         jwt_audience=e("MEDICAL_DOCTOR_JWT_AUDIENCE", ""),
         jwt_jwks_url=e("MEDICAL_DOCTOR_JWT_JWKS_URL", ""),
         jwt_required_scope=e("MEDICAL_DOCTOR_JWT_REQUIRED_SCOPE", ""),
+        jwt_trust_unverified_email=_flag("MEDICAL_DOCTOR_JWT_TRUST_UNVERIFIED_EMAIL"),
         cors_origins=tuple(_list("MEDICAL_DOCTOR_CORS_ORIGINS") or ["*"]),
         allowed_hosts=tuple(_list("MEDICAL_DOCTOR_ALLOWED_HOSTS")),
         consult_limit_per_hour=int(e("MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR", "0")),

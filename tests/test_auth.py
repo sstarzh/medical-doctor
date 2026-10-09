@@ -105,8 +105,9 @@ async def sign_in(c: httpx.AsyncClient):
     assert page.status_code == 200
     assert "ChatGPT" in page.text and "Continue with Google" in page.text and "chatgpt.com" in page.text
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
-    up = await c.get(f"/login/google?{login.query}")
-    assert up.status_code == 302
+    txn = parse_qs(login.query)["txn"][0]
+    up = await c.post("/login/google", data={"txn": txn})  # consent click; cookie from the consent page
+    assert up.status_code == 303, up.text
     google = urlparse(up.headers["location"])
     gq = parse_qs(google.query)
     assert google.netloc == "accounts.google.com" and gq["code_challenge_method"] == ["S256"]
@@ -186,7 +187,6 @@ async def test_refresh_rotation_and_revocation():
         refresh = {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": client_id}
         new = await c.post("/token", data=refresh)
         assert new.status_code == 200, new.text
-        assert (await c.post("/token", data=refresh)).status_code == 400  # old refresh token rotated out
         access = new.json()["access_token"]
         assert (await call(c, "initialize", INIT, access)).status_code == 200
         # SDK quirk: RevocationRequest requires a client_secret field even for public clients.
@@ -295,3 +295,126 @@ async def test_jwt_verifier_accepts_valid_token():
 async def test_jwt_verifier_rejects(claims):
     v = JwtVerifier(JWT_SETTINGS, jwks_client=_FakeJwks())
     assert await v.verify_token(_jwt(**claims)) is None
+
+
+# --- regressions for the PR #1 review findings ----------------------------------
+
+
+async def _start(c):
+    """Register + /authorize; returns the txn of a pending sign-in."""
+    reg = (await c.post("/register", json={"redirect_uris": [REDIRECT], "client_name": "Evil", "token_endpoint_auth_method": "none"})).json()
+    _, challenge = pkce()
+    r = await c.get("/authorize", params={"response_type": "code", "client_id": reg["client_id"], "redirect_uri": REDIRECT,
+                                          "code_challenge": challenge, "code_challenge_method": "S256", "state": "s"})
+    return parse_qs(urlparse(r.headers["location"]).query)["txn"][0]
+
+
+async def test_consent_cannot_be_skipped_with_a_link():
+    async with client_for() as c:
+        txn = await _start(c)
+        assert (await c.get(f"/login/google?txn={txn}")).status_code == 405  # no GET shortcut past consent
+        r = await c.post("/login/google", data={"txn": txn})  # victim's browser never saw the consent page
+        assert r.status_code == 403 and "consent page" in r.text
+
+
+async def test_callback_must_finish_in_consenting_browser():
+    async with client_for() as c:
+        txn = await _start(c)
+        await c.get(f"/login?txn={txn}")
+        up = await c.post("/login/google", data={"txn": txn})
+        state = parse_qs(urlparse(up.headers["location"]).query)["state"][0]
+        c.cookies.clear()  # a different browser (login CSRF)
+        cb = await c.get("/oauth/callback/google", params={"code": "x", "state": state})
+        assert cb.status_code == 403
+
+
+async def test_refresh_token_reuse_revokes_the_session():
+    async with client_for() as c:
+        client_id, _, tokens = await get_tokens(c)
+        refresh = {"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"], "client_id": client_id}
+        stolen_use = await c.post("/token", data=refresh)  # attacker rotates first
+        assert stolen_use.status_code == 200
+        replay = await c.post("/token", data=refresh)  # legitimate client replays the old token
+        assert replay.status_code == 400
+        new = stolen_use.json()
+        assert (await call(c, "initialize", INIT, new["access_token"])).status_code == 401  # whole grant revoked
+        again = {**refresh, "refresh_token": new["refresh_token"]}
+        assert (await c.post("/token", data=again)).status_code == 400
+
+
+async def test_session_lifetime_caps_token_ttls():
+    async with client_for(replace(SETTINGS, max_session_lifetime=120)) as c:
+        _, _, tokens = await get_tokens(c)
+        assert tokens["expires_in"] <= 120
+
+
+async def test_registration_is_capped():
+    from medical_doctor.auth.store import Store as S
+
+    app = create_app(SETTINGS, host="0.0.0.0", stateless=True, json_response=True, store=S(caps={"client": 2}), http=fake_google("doc@example.com"))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC) as c:
+        body = {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"}
+        codes = [(await c.post("/register", json=body)).status_code for _ in range(3)]
+        assert codes == [201, 201, 400]
+
+
+def test_store_purges_expired_rows(monkeypatch):
+    from medical_doctor.auth import store as store_mod
+
+    st = store_mod.Store()
+    st.put("pending", "old", {}, ttl=-1)
+    monkeypatch.setattr(store_mod, "PURGE_INTERVAL", -1)
+    st.put("pending", "new", {}, ttl=60)  # any write triggers the periodic purge
+    rows = st._db.execute("SELECT key FROM kv").fetchall()
+    assert rows == [("new",)]
+
+
+async def test_oidc_discovery_failure_shows_friendly_error():
+    oidc = UpstreamIdP("oidc", "Company SSO", "cid", "csecret", issuer="https://sso.example.com")
+
+    def down(request):
+        raise httpx.ConnectError("unreachable")
+
+    s = replace(SETTINGS, idps=(oidc,))
+    app = create_app(s, host="0.0.0.0", stateless=True, json_response=True, store=Store(),
+                     http=lambda: httpx.AsyncClient(transport=httpx.MockTransport(down)))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC) as c:
+        txn = await _start(c)
+        await c.get(f"/login?txn={txn}")
+        r = await c.post("/login/oidc", data={"txn": txn})
+        assert r.status_code == 502 and "could not be reached" in r.text
+
+
+def test_rate_limit_is_shared_across_processes(tmp_path):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from medical_doctor.auth.store import Store as S
+    from medical_doctor.server import RateLimiter
+
+    db = str(tmp_path / "auth.db")
+    worker_a, worker_b = RateLimiter(2, S(db)), RateLimiter(2, S(db))  # two workers, one database
+    worker_a.check("alice")
+    worker_b.check("alice")
+    with pytest.raises(ToolError):
+        worker_a.check("alice")
+    worker_b.check("bob")
+
+
+async def test_jwt_entra_scp_string():
+    s = replace(JWT_SETTINGS, jwt_required_scope="mcp", allowed_domains=())
+    v = JwtVerifier(s, jwks_client=_FakeJwks())
+    tok = await v.verify_token(_jwt(scope=None, scp="access_as_user mcp"))
+    assert tok and tok.scopes == ["access_as_user", "mcp"]
+
+
+async def test_jwt_issuer_trailing_slash_either_way():
+    v = JwtVerifier(replace(JWT_SETTINGS, jwt_issuer="https://idp.example.com/"), jwks_client=_FakeJwks())
+    assert await v.verify_token(_jwt(iss="https://idp.example.com"))
+
+
+async def test_jwt_missing_email_verified_is_not_trusted_by_default():
+    v = JwtVerifier(JWT_SETTINGS, jwks_client=_FakeJwks())
+    claims = {"email_verified": None}
+    assert await v.verify_token(_jwt(**claims)) is None
+    trusting = JwtVerifier(replace(JWT_SETTINGS, jwt_trust_unverified_email=True), jwks_client=_FakeJwks())
+    assert await trusting.verify_token(_jwt(**claims))

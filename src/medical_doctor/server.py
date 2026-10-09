@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
-from collections import defaultdict, deque
 from typing import Any, Literal
 
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -70,24 +68,29 @@ def current_user() -> dict[str, Any]:
 
 
 class RateLimiter:
-    """Sliding one-hour window per user, protecting the model budget behind `consult`."""
+    """Sliding one-hour window per user, protecting the model budget behind `consult`.
 
-    def __init__(self, per_hour: int):
+    Counters live in the SQLite store (MEDICAL_DOCTOR_DB), so the limit holds across worker
+    processes and restarts on a host, and expired hits are purged. Replicas on different hosts
+    need a shared volume for the database or a per-replica limit.
+    """
+
+    def __init__(self, per_hour: int, store: Any = None):
         self.per_hour = per_hour
-        self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self.store = store
 
     def check(self, key: str) -> None:
         if self.per_hour <= 0:
             return
-        now, window = time.time(), self._hits[key]
-        while window and window[0] < now - 3600:
-            window.popleft()
-        if len(window) >= self.per_hour:
+        if self.store is None:
+            from .auth.store import Store
+
+            self.store = Store()
+        if not self.store.hit(f"consult:{key}", self.per_hour, 3600):
             raise ToolError(f"Consult limit reached ({self.per_hour}/hour). Try again later.")
-        window.append(now)
 
 
-def auth_kwargs(settings: Settings, store: Any = None, http: Any = None) -> dict[str, Any]:
+def auth_kwargs(settings: Settings, store: Any, http: Any = None) -> dict[str, Any]:
     """MCPServer keyword arguments for the configured authentication mode."""
     if settings.auth_mode == "none":
         return {}
@@ -112,10 +115,9 @@ def auth_kwargs(settings: Settings, store: Any = None, http: Any = None) -> dict
             "token_verifier": JwtVerifier(settings),
         }
     from .auth.oauth import SCOPE, BrokerOAuthProvider
-    from .auth.store import Store
     from .auth.upstream import default_http
 
-    provider = BrokerOAuthProvider(settings, store or Store(settings.db_path), http or default_http)
+    provider = BrokerOAuthProvider(settings, store, http or default_http)
     return {
         "auth": AuthSettings(
             issuer_url=settings.public_url,
@@ -132,6 +134,10 @@ def auth_kwargs(settings: Settings, store: Any = None, http: Any = None) -> dict
 
 def build_server(settings: Settings | None = None, *, store: Any = None, http: Any = None) -> MCPServer:
     settings = settings or Settings()
+    if store is None and (settings.auth_mode == "oauth" or settings.consult_limit_per_hour > 0):
+        from .auth.store import Store
+
+        store = Store(settings.db_path or ":memory:")
     kwargs = auth_kwargs(settings, store, http)
     mcp = MCPServer(
         name="medical-doctor",
@@ -141,7 +147,7 @@ def build_server(settings: Settings | None = None, *, store: Any = None, http: A
         website_url=settings.public_url or None,
         **kwargs,
     )
-    limiter = RateLimiter(settings.consult_limit_per_hour)
+    limiter = RateLimiter(settings.consult_limit_per_hour, store)
     _register_tools(mcp, limiter)
     _register_routes(mcp, settings)
     if settings.auth_mode == "oauth":

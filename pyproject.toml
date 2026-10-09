@@ -10,7 +10,7 @@ dependencies = [
   "anthropic>=1.13",
   "httpx2>=2.13",
   "pyyaml>=6",
-  "pyjwt[crypto]>=2.8",
+  "pyjwt[crypto]>=2.10.1",
   "uvicorn>=0.30",
   "starlette>=0.40",
 ]

@@ -101,11 +101,15 @@ When more than one is configured, the sign-in page offers a button for each. All
 **Security design**
 - **Closed by default.** The server refuses to start in `oauth` mode unless you set an allowlist (domains or emails), or explicitly opt in with `MEDICAL_DOCTOR_ALLOW_ANY_USER=1`. Every consult spends your Anthropic credits.
 - **Verified emails only.** The allowlist only accepts verified emails. Microsoft requires a specific tenant ID, because multi-tenant Entra apps return an unverified, user-editable `email` claim (the "nOAuth" issue).
-- **Consent screen.** Users always see a page naming the requesting app and its redirect host before going to Google. This follows the MCP security best practices for proxy-style servers and blocks confused-deputy attacks through maliciously registered clients. The page cannot be framed and sends a strict CSP.
+- **Consent screen, enforced.** Users always see a page naming the requesting app and its redirect host before going to Google. This follows the MCP security best practices for proxy-style servers and blocks confused-deputy attacks through maliciously registered clients. The "Continue" step is a POST that only works with a SameSite cookie the consent page sets, and the provider callback checks the same cookie. So no link can skip the page, and a sign-in can't be finished in another browser (login CSRF). The page cannot be framed and sends a strict CSP.
 - **No upstream tokens reach clients.** Google, GitHub, and Microsoft tokens are never passed through. Clients get short-lived tokens bound to this server: 1 h access tokens, plus 30-day refresh tokens that rotate on every use.
+- **Stolen refresh tokens are caught.** Replaying a refresh token that has already been rotated revokes the whole session. Every sign-in also has an absolute lifetime (`MEDICAL_DOCTOR_MAX_SESSION_DAYS`, default 90) that rotation can't extend.
+- **Bounded storage.** Client registrations that never complete a sign-in expire after 24 h. Expired rows are purged automatically, and unauthenticated endpoints have row caps, so a registration flood can't fill the disk.
 - **Hashed, single-use secrets.** Codes and tokens are stored only as SHA-256 hashes, in SQLite with `0600` permissions (`MEDICAL_DOCTOR_DB`). Authorization codes work once and expire in 5 minutes.
 - **No PHI in logs.** Audit logs record who ran a consult and the urgency level, never the clinical text.
-- **Per-user limit.** `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` caps consults per user to protect model spend.
+- **Per-user limit.** `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` caps consults per user to protect model spend. Counters live in the SQLite database, so the limit holds across worker processes and restarts. Replicas on different hosts need a shared volume or a per-replica limit.
+- **Proxy headers.** `X-Forwarded-*` headers are trusted only from `FORWARDED_ALLOW_IPS` (default `127.0.0.1`). Set it to your load balancer's address range.
+- **External JWTs.** In `jwt` mode, the email allowlist requires `email_verified: true`. Set `MEDICAL_DOCTOR_JWT_TRUST_UNVERIFIED_EMAIL=1` only if your authorization server never lets users set their own email.
 
 ### Deploy
 
@@ -172,6 +176,18 @@ case ─► red_flag_screen (regex, negation-aware) ─┐
 - **New skill:** add `skills/<name>/SKILL.md` with `name` (it must match the folder name) and `description` frontmatter. The server, Claude Code, and OpenClaw all pick it up.
 - **New calculator:** add a function to `calculators.py`, register it in `CALCULATORS`, and add a test with a published reference value.
 - **New data source:** add an async function in `sources.py` and a tool in `server.py`.
+
+## CI and code review
+
+- **`.github/workflows/ci.yml`** runs the test suite on Python 3.11, 3.12, and 3.13 for every pull request and every push to `main`.
+- **`.github/workflows/claude-code-review.yml`**: Claude reviews every pull request and posts inline comments.
+- **`.github/workflows/claude.yml`**: mention `@claude` in an issue or PR comment to ask questions or request changes.
+
+The two Claude workflows need one-time setup:
+1. Install the [Claude GitHub App](https://github.com/apps/claude) on the repository.
+2. Add an `ANTHROPIC_API_KEY` repository secret. Alternatively, add `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` and switch the input as noted in the workflow file.
+
+Running `/install-github-app` in Claude Code does both steps for you.
 
 ## Development
 

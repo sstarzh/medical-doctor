@@ -12,6 +12,7 @@ import jwt
 from mcp.server.auth.provider import AccessToken
 
 from ..config import Settings
+from .upstream import LoginError, check_access
 
 log = logging.getLogger("medical_doctor.auth")
 
@@ -30,6 +31,18 @@ def api_key_access_token(settings: Settings, token: str) -> AccessToken | None:
                 claims={"iss": settings.public_url, "name": label},
             )
     return None
+
+
+def parse_scopes(claims: dict[str, Any]) -> list[str]:
+    """OAuth `scope` and Entra `scp` are space-separated strings; some servers emit lists."""
+    scopes: list[str] = []
+    for claim in ("scope", "scp"):
+        value = claims.get(claim)
+        if isinstance(value, str):
+            scopes += value.split()
+        elif isinstance(value, list):
+            scopes += [str(v) for v in value]
+    return scopes
 
 
 class ApiKeyVerifier:
@@ -72,15 +85,19 @@ class JwtVerifier:
 
     def _decode(self, token: str) -> dict[str, Any]:
         key = self._client().get_signing_key_from_jwt(token).key
-        return jwt.decode(
+        claims = jwt.decode(
             token,
             key,
             algorithms=self.ALGORITHMS,
             audience=self.audience,
-            issuer=[self.settings.jwt_issuer, self.settings.jwt_issuer + "/"],
             options={"require": ["exp", "iss", "aud", "sub"]},
             leeway=30,
         )
+        # Checked here rather than via jwt.decode(issuer=[...]): list issuers need PyJWT >= 2.10,
+        # and issuers differ on a trailing slash ("https://x.auth0.com/" vs ".../realms/x").
+        if str(claims["iss"]).rstrip("/") != self.settings.jwt_issuer.rstrip("/"):
+            raise jwt.InvalidIssuerError("issuer mismatch")
+        return claims
 
     async def verify_token(self, token: str) -> AccessToken | None:
         if key_token := api_key_access_token(self.settings, token):
@@ -90,14 +107,16 @@ class JwtVerifier:
         except Exception as exc:
             log.info("rejected JWT: %s", type(exc).__name__)
             return None
-        scopes = claims.get("scope", "").split() if isinstance(claims.get("scope"), str) else list(claims.get("scp", []))
+        scopes = parse_scopes(claims)
         if self.settings.jwt_required_scope and self.settings.jwt_required_scope not in scopes:
             return None
         email = (claims.get("email") or "").lower()
         if self.settings.allowed_emails or self.settings.allowed_domains:
-            if not email or not claims.get("email_verified", True):
-                return None
-            if email not in self.settings.allowed_emails and email.rsplit("@", 1)[-1] not in self.settings.allowed_domains:
+            verified = claims.get("email_verified") in (True, "true") or self.settings.jwt_trust_unverified_email
+            try:
+                check_access(self.settings, email, verified)
+            except LoginError as exc:
+                log.info("rejected JWT for %s: %s", claims.get("sub"), exc)
                 return None
         return AccessToken(
             token=token,

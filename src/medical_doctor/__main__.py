@@ -46,7 +46,16 @@ def main() -> None:
     if settings.auth_mode == "none" and args.host not in ("127.0.0.1", "localhost", "::1"):
         logging.warning("Serving on %s WITHOUT authentication. Set MEDICAL_DOCTOR_AUTH for any shared deployment.", args.host)
     app = create_app(settings, host=args.host, stateless=args.stateless, json_response=args.json_response)
-    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="*")
+    # Trust X-Forwarded-* only from known proxies (uvicorn default: 127.0.0.1). Behind a load
+    # balancer that overwrites these headers (Cloud Run, ALB, ingress), set FORWARDED_ALLOW_IPS
+    # to its address range; never "*" when clients can reach the container directly.
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        proxy_headers=True,
+        forwarded_allow_ips=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+    )
 
 
 if __name__ == "__main__":
