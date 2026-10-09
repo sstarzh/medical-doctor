@@ -5,10 +5,15 @@
       "medical-doctor": {
         "command": "medical-doctor-mcp",
         "args": [],
-        "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" }
+        "env": {
+          "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+        }
       },
       "medical-doctor-remote": {
-        "url": "http://localhost:8000/mcp"
+        "url": "https://<your-host>/mcp",
+        "headers": {
+          "Authorization": "Bearer ${MEDICAL_DOCTOR_TOKEN}"
+        }
       }
     }
   }
