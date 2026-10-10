@@ -133,3 +133,12 @@ class Store:
                 self._db.execute("ROLLBACK")
                 raise
         return allowed
+
+
+def open_store(settings: Any) -> Any:
+    """Postgres when a database URL is configured (serverless / multi-instance), else SQLite."""
+    if getattr(settings, "database_url", ""):
+        from .pgstore import PostgresStore
+
+        return PostgresStore(settings.database_url)
+    return Store(getattr(settings, "db_path", "") or ":memory:")

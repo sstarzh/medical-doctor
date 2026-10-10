@@ -135,9 +135,9 @@ def auth_kwargs(settings: Settings, store: Any, http: Any = None) -> dict[str, A
 def build_server(settings: Settings | None = None, *, store: Any = None, http: Any = None) -> MCPServer:
     settings = settings or Settings()
     if store is None and (settings.auth_mode == "oauth" or settings.consult_limit_per_hour > 0):
-        from .auth.store import Store
+        from .auth.store import open_store
 
-        store = Store(settings.db_path or ":memory:")
+        store = open_store(settings)
     kwargs = auth_kwargs(settings, store, http)
     mcp = MCPServer(
         name="medical-doctor",

@@ -47,6 +47,7 @@ class Settings:
     allowed_domains: tuple[str, ...] = ()
     allow_any_user: bool = False
     db_path: str = ""
+    database_url: str = ""  # Postgres (e.g. Supabase); takes precedence over db_path
     access_token_ttl: int = 3600
     refresh_token_ttl: int = 30 * 24 * 3600
     max_session_lifetime: int = 90 * 24 * 3600  # absolute cap; refresh rotation never extends past it
@@ -147,6 +148,8 @@ def load_settings() -> Settings:
     if mode not in ("none", "apikey", "oauth", "jwt"):
         raise ValueError(f"MEDICAL_DOCTOR_AUTH must be none|apikey|oauth|jwt, got {mode!r}")
     public_url = e("MEDICAL_DOCTOR_PUBLIC_URL", "").rstrip("/")
+    if not public_url and e("VERCEL_PROJECT_PRODUCTION_URL"):
+        public_url = f"https://{e('VERCEL_PROJECT_PRODUCTION_URL')}"  # set automatically on Vercel
     s = Settings(
         public_url=public_url,
         auth_mode=mode,  # type: ignore[arg-type]
@@ -156,6 +159,8 @@ def load_settings() -> Settings:
         allowed_domains=tuple(x.lower().lstrip("@") for x in _list("MEDICAL_DOCTOR_ALLOWED_DOMAINS")),
         allow_any_user=_flag("MEDICAL_DOCTOR_ALLOW_ANY_USER"),
         db_path=e("MEDICAL_DOCTOR_DB", os.path.expanduser("~/.medical-doctor/auth.db")),
+        # Supabase's Vercel integration sets POSTGRES_URL (pooled, transaction mode).
+        database_url=e("MEDICAL_DOCTOR_DATABASE_URL") or e("POSTGRES_URL") or e("DATABASE_URL") or "",
         access_token_ttl=int(e("MEDICAL_DOCTOR_ACCESS_TOKEN_TTL", "3600")),
         refresh_token_ttl=int(e("MEDICAL_DOCTOR_REFRESH_TOKEN_TTL", str(30 * 24 * 3600))),
         max_session_lifetime=int(float(e("MEDICAL_DOCTOR_MAX_SESSION_DAYS", "90")) * 24 * 3600),
@@ -169,6 +174,11 @@ def load_settings() -> Settings:
         consult_limit_per_hour=int(e("MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR", "0")),
     )
     validate(s)
+    if e("VERCEL") and s.auth_mode == "oauth" and not s.database_url:
+        raise ValueError(
+            "On Vercel the local disk is temporary and per-instance: set POSTGRES_URL (Supabase pooled "
+            "connection string) or MEDICAL_DOCTOR_DATABASE_URL so sign-ins and tokens persist"
+        )
     return s
 
 

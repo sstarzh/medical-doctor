@@ -56,8 +56,9 @@ def fake_google(email: str):
 
 
 @asynccontextmanager
-async def client_for(settings=SETTINGS, email="doc@example.com"):
-    app = create_app(settings, host="0.0.0.0", stateless=True, json_response=True, store=Store(), http=fake_google(email))
+async def client_for(settings=SETTINGS, email="doc@example.com", store=None):
+    store = store or Store()
+    app = create_app(settings, host="0.0.0.0", stateless=True, json_response=True, store=store, http=fake_google(email))
     inner = app.app  # unwrap CORS to run the MCP session manager lifespan
     async with inner.router.lifespan_context(inner):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC) as c:
