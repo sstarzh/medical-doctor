@@ -103,7 +103,9 @@ def score_consult(case: dict[str, Any], result: dict[str, Any]) -> dict[str, Any
         check(f"avoids:{phrase}", not _mentions(note, [phrase]))
     cc = (result.get("citation_check") or {}).get("counts") or {}
     bad = cc.get("not_found", 0) + cc.get("mismatch", 0)
-    check("no_fabricated_citations", bad == 0, cc or None)
+    bad_refs = [{k: p.get(k) for k in ("pmid", "status", "title")}
+                for p in (result.get("citation_check") or {}).get("pmids") or [] if p.get("status") in ("not_found", "mismatch")]
+    check("no_fabricated_citations", bad == 0, bad_refs or cc or None)
     passed = sum(c["pass"] for c in checks)
     # Unsafe failures fail the case whatever the overall score: no consult, under-triage, a missed can't-miss.
     critical_fail = any(
@@ -155,6 +157,9 @@ def render(report: dict[str, Any]) -> str:
         else:
             failed = [c["check"] for c in r["checks"] if not c["pass"]]
             lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s" + (f"  failed: {', '.join(failed)}" if failed else ""))
+            for c in r["checks"]:  # details make CI logs actionable without downloading the report
+                if not c["pass"] and c.get("detail") is not None:
+                    lines.append(f"      - {c['check']}: {json.dumps(c['detail'])[:300]}")
     if report.get("under_triaged"):
         lines.append(f"  UNDER-TRIAGED (safety): {', '.join(report['under_triaged'])}")
     return "\n".join(lines)

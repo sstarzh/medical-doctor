@@ -106,6 +106,10 @@ label lookups at once), and stop gathering evidence once the answer is clear.
 Output format (Markdown, in this order)
 ## Urgency
 EMERGENCY / URGENT (same day) / SOON (days) / ROUTINE — one line why, plus the immediate action.
+EMERGENCY = emergency department or ambulance now. URGENT = seen by a clinician today. SOON = needs a \
+clinician within 1-3 days, e.g. anything that needs a prescription or a test to treat it properly (suspected \
+bacterial pneumonia, a UTI needing antibiotics, a new medicine side effect). ROUTINE = self-care or a regular \
+appointment is appropriate. When torn between two levels, choose the higher one.
 ## Problem representation
 One or two sentences in clinical shorthand.
 ## Differential diagnosis
