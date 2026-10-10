@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -211,6 +212,15 @@ def build_server(
     _register_tools(mcp, limiter, settings, records)
     register_record_tools(mcp, records)
     register_order_tools(mcp, records)
+    if records.service is not None:
+        from .auth.store import AsyncStore
+        from .ehr import EhrConnector, register_ehr_routes
+        from .records_tools import register_ehr_tool
+
+        connector = EhrConnector(settings, AsyncStore(store) if store is not None else None, lambda: records.service)
+        register_ehr_tool(mcp, records, connector)
+        if connector.available() is None:
+            register_ehr_routes(mcp, connector)
     _register_routes(mcp, settings)
     if settings.auth_mode == "oauth":
         from .auth.oauth import register_login_routes
@@ -300,12 +310,15 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 "get_skill, and call this server's calculator/drug/PubMed tools to verify every number and claim.",
                 "disclaimer": DISCLAIMER,
             }
-        chart_summary = None
-        if patient_id:
+        async def load_summary() -> str | None:
+            if not patient_id:
+                return None
             from .records.service import summarize
 
-            chart_summary = summarize(await records.chart(patient_id, purpose="consult"))
-        await limiter.check(who)
+            return summarize(await records.chart(patient_id, purpose="consult"))
+
+        # Independent setup steps run concurrently (each is a database or registry round trip).
+        chart_summary, _, tools = await asyncio.gather(load_summary(), limiter.check(who), physician_tools())
 
         async def progress(step: int, message: str) -> None:
             try:
@@ -322,7 +335,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 question=question,
                 audience=audience,
                 triage=triage,
-                tools=await physician_tools(),
+                tools=tools,
                 execute_tool=execute_for_physician,
                 settings=settings,
                 chart_summary=chart_summary,

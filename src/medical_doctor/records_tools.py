@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp_types import ToolAnnotations
 from pydantic import Field
 
@@ -28,7 +29,7 @@ PatientId = Annotated[str, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")]
 
 # Tools that write or erase patient data are never offered to the consult model.
 RECORD_WRITE_TOOLS = {
-    "patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update", "patient_import_fhir",
+    "patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update", "patient_import_fhir", "ehr_connect",
 }
 RECORD_TOOLS = RECORD_WRITE_TOOLS | {"patient_list", "patient_chart", "patient_export", "patient_access_log", "preventive_care_due"}
 
@@ -243,3 +244,34 @@ def register_order_tools(mcp: MCPServer, records: Records) -> None:
 
 
 SECTION_NAMES = list(SECTIONS)
+
+
+def register_ehr_tool(mcp: MCPServer, records: Records, connector: Any) -> None:
+    from .ehr import VENDORS, EhrError
+
+    @mcp.tool(annotations=WRITE, title="Connect patient portal (MyChart etc.)")
+    async def ehr_connect(
+        patient_id: PatientId,
+        fhir_base_url: Annotated[str, Field(max_length=500)],
+        portal: Literal["epic", "oracle", "athena", "smart"] = "epic",
+    ) -> dict[str, Any]:
+        """Import the patient's records straight from their health system's patient portal: Epic MyChart,
+        Oracle Health (Cerner), athenahealth, or any SMART on FHIR portal. Returns a link the user opens in a
+        browser to sign in to the portal and approve read access; conditions, medications, allergies, labs
+        (including Labcorp/Quest results the health system received), vitals, immunizations and procedures are
+        then imported into profile `patient_id`. fhir_base_url is the health system's FHIR R4 patient API base
+        (from the health system or Epic's endpoint directory); use "sandbox" with portal="epic" to try Epic's
+        test patients. Give the link to the user; never open it yourself."""
+        p = records.who()
+        chart = await records.chart(patient_id, purpose="ehr_connect")
+        label = chart.get("profile", {}).get("name") or patient_id
+        token = get_access_token()
+        account = ((token.claims or {}).get("email") if token else None) or "this account"
+        try:
+            out = await connector.start(owner=p.owner, client_id=p.client_id, account=account, patient_id=patient_id,
+                                        patient_label=label, vendor=portal, fhir_base_url=fhir_base_url)
+        except EhrError as exc:
+            raise ToolError(str(exc)) from None
+        out["instructions"] = (f"Open connect_url in a browser within 10 minutes, sign in to {VENDORS[portal]} and approve "
+                               "access. The page confirms what was imported; then review the chart with patient_chart.")
+        return out

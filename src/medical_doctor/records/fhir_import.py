@@ -174,7 +174,8 @@ def convert(payload: Any) -> dict[str, Any]:
                     concept = next((c.get("code") for c in r.get("contained") or [] if f"#{c.get('id')}" == ref), None)
                 else:
                     concept = (meds_by_ref.get(ref) or {}).get("code")
-            name = _concept(concept)
+            # Epic often gives only medicationReference.display.
+            name = _concept(concept) or (r.get("medicationReference") or {}).get("display")
             if not name:
                 skip(r, "no medication name")
                 continue

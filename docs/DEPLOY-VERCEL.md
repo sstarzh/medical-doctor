@@ -57,6 +57,18 @@ GitHub, Microsoft, and company SSO work the same way, using `/oauth/callback/git
 
 The server won't start in `oauth` mode on Vercel without a database URL. Without one, sign-ins would vanish between instances.
 
+## Patient portal connections (Epic MyChart and others)
+
+1. **Register the app with Epic.** Go to [fhir.epic.com](https://fhir.epic.com) → Build Apps → Create.
+   - **Audience:** Patients.
+   - **Redirect URI:** `https://<project>.vercel.app/ehr/callback`.
+   - **APIs (R4, read):** Patient, Condition, MedicationRequest, AllergyIntolerance, Observation, Immunization, Procedure.
+
+   Epic issues a non-production client ID, which works with its sandbox at once, and a production client ID.
+2. **Set the client ID in Vercel:** `MEDICAL_DOCTOR_SMART_CLIENTS=epic=<client id>`. For Oracle Health, add `oracle=<id>`, registered on the Oracle Health developer portal with the same redirect URI.
+3. **Test:** run `ehr_connect` with `fhir_base_url="sandbox"` and sign in with one of Epic's test patients.
+4. **Go live:** a real patient needs their health system's FHIR R4 base URL from Epic's endpoint directory (open.epic.com → Endpoints). Some health systems must activate a new app before patients can use it.
+
 ## Things to know
 
 - **Time limit.**

@@ -160,7 +160,7 @@ async def test_tool_annotations_are_accurate():
     # ChatGPT treats tools without readOnlyHint as write actions that need confirmation, so every
     # read tool must say so; tools that change the chart must NOT claim to be read-only.
     writes = {"patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update",
-              "draft_prescription", "draft_referral", "patient_import_fhir"}
+              "draft_prescription", "draft_referral", "patient_import_fhir", "ehr_connect"}
     destructive = {"patient_delete_item", "patient_erase"}
     async with Client(mcp) as client:
         for t in (await client.list_tools()).tools:
