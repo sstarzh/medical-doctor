@@ -35,6 +35,7 @@ packages = ["src/medical_doctor"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "medical_doctor/skills"
+"evals/cases.yaml" = "medical_doctor/eval_cases/cases.yaml"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

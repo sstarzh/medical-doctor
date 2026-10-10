@@ -4,6 +4,7 @@
     medical-doctor-mcp --transport http        # streamable HTTP on :8000/mcp (remote clients)
     medical-doctor-mcp gen-key [label]         # generate an API key
     medical-doctor-mcp check-freshness         # skill/guideline review status (exit 1 if overdue)
+    medical-doctor-mcp eval [--consult]        # clinical vignette evals (see evals/cases.yaml)
 """
 
 from __future__ import annotations
@@ -33,6 +34,10 @@ def check_freshness() -> int:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "eval":
+        from .evals import main as run_evals
+
+        sys.exit(run_evals(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "check-freshness":
         sys.exit(check_freshness())
     if len(sys.argv) > 1 and sys.argv[1] == "gen-data-key":

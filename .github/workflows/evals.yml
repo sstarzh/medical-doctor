@@ -1,0 +1,50 @@
+name: Clinical evals
+# Full consult evals cost model tokens, so they run on demand only.
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: Model provider
+        type: choice
+        options: [anthropic, openai, meta, llama]
+        default: anthropic
+      only:
+        description: Comma-separated case ids (empty = all)
+        required: false
+        default: ""
+permissions:
+  contents: read
+jobs:
+  consult-evals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Run consult evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+          LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
+          MEDICAL_DOCTOR_LLAMA_BASE_URL: ${{ vars.MEDICAL_DOCTOR_LLAMA_BASE_URL }}
+          MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR: "0"
+          ONLY: ${{ inputs.only }}
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          set +e
+          args=(--consult --provider "$PROVIDER" --out report.json)
+          if [ -n "$ONLY" ]; then args+=(--only "$ONLY"); fi
+          medical-doctor-mcp eval "${args[@]}" | tee report.txt
+          status=${PIPESTATUS[0]}
+          { echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report-${{ inputs.provider }}
+          path: report.json

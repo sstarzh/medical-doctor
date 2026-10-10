@@ -129,7 +129,10 @@ RULES: tuple[RedFlagRule, ...] = (
         "thunderclap",
         "Thunderclap headache (subarachnoid hemorrhage until proven otherwise)",
         "emergency",
-        (r"worst\s+headache(?:\s+of\s+(?:my|their|his|her)\s+life)?", r"thunderclap", r"sudden\s+(?:severe|explosive)\s+headache"),
+        (
+            r"worst(?:[- ]ever)?\s+headache(?:\s+of\s+(?:my|their|his|her)\s+life)?", r"thunderclap",
+            r"sudden(?:,)?\s+(?:severe|explosive|worst[- ]ever)\s+headache", r"headache\s+(?:that\s+)?peaked\s+(?:with)?in\s+(?:a|one|\d+)\s+(?:minute|second)",
+        ),
         CALL_EMS + " Needs non-contrast CT head; LP if CT negative and >6 h.",
     ),
     RedFlagRule(
@@ -213,6 +216,9 @@ RULES: tuple[RedFlagRule, ...] = (
             r"pregnan\w*[^.]{0,80}(?:bleeding|severe\s+(?:abdominal|pelvic|belly)\s+pain|seizure|severe\s+headache|vision\s+changes|fluid\s+leak|decreased\s+(?:fetal\s+)?movement)",
             r"(?:bleeding|severe\s+(?:abdominal|pelvic)\s+pain|seizure|severe\s+headache)[^.]{0,80}(?:pregnan|weeks\s+pregnant)",
             r"\bectopic\b",
+            # Possible early pregnancy + pain/bleeding/lightheadedness = ectopic until proven otherwise.
+            r"(?:missed\s+(?:a\s+|her\s+|my\s+)?period|period\s+(?:is\s+)?(?:late|overdue)|(?:last\s+menstrual\s+period|\blmp\b)[^.]{0,20}\d+\s+weeks|positive\s+pregnancy\s+test)"
+            r"[^.]{0,120}(?:pelvic\s+pain|abdominal\s+pain|quadrant\s+pain|belly\s+pain|spotting|bleeding|light-?headed|dizz\w*|faint\w*)",
             r"\b(?:pre-?)?eclampsia\b",
         ),
         CALL_EMS + " Possible ectopic pregnancy, abruption, or (pre)eclampsia.",
@@ -274,6 +280,7 @@ RULES: tuple[RedFlagRule, ...] = (
         (
             r"(?:hit|bumped|struck|banged)\s+(?:his|her|my|their|the)\s+head[^.]{0,80}(?:confus\w*|vomit\w*|unconscious|passed\s+out|drowsy|sleepy|seizure|blood\s+thinner|not\s+acting\s+normal)",
             r"head\s+(?:injury|trauma)[^.]{0,60}(?:confus\w*|vomit\w*|unconscious|loss\s+of\s+consciousness|blood\s+thinner|anticoagula)",
+            r"(?:fell|fall(?:en)?|hit|struck|collision|crash|accident|tackled)\b[^.]{0,80}(?:loss\s+of\s+consciousness|knocked\s+(?:out|unconscious)|\bloc\b)",
         ),
         CALL_EMS + " Head injury with confusion, vomiting, loss of consciousness, or on blood thinners needs urgent CT.",
     ),
@@ -291,9 +298,17 @@ RULES: tuple[RedFlagRule, ...] = (
         (
             r"unresponsive|unconscious|(?:isn'?t|not|stopped)\s+responding\b|non-?responsive|won'?t\s+wake\s+up|can'?t\s+(?:be\s+)?wake?n?\b|unarousable",
             r"(?:sudden|acute)\s+confusion|\b(?:now|suddenly|newly|acutely)\s+confused\b|not\s+making\s+sense",
+            r"\bnew\s+(?:onset\s+)?(?:confusion|disorientation)|(?:increasing|worsening)\s+confusion|\bdelirium\b|\bdelirious\b",
         ),
         CALL_EMS + " New confusion or unresponsiveness can be stroke, sepsis, low blood sugar, overdose or head injury.",
         negatable=False,
+    ),
+    RedFlagRule(
+        "hard_to_wake",
+        "Reduced level of consciousness",
+        "emergency",
+        (r"(?:hard|difficult)\s+to\s+(?:a)?wake|(?:very|extremely|unusually)\s+(?:sleepy|drowsy)\s+and\s+(?:hard|difficult)",),
+        CALL_EMS + " A child or adult who is hard to wake needs emergency assessment (dehydration, sepsis, hypoglycemia, head injury, toxins).",
     ),
     RedFlagRule(
         "hypoglycemia",
@@ -356,6 +371,8 @@ RULES: tuple[RedFlagRule, ...] = (
             r"(?:severe|worst|excruciating)[^.]{0,30}(?:abdominal|stomach|belly)\s+pain",
             r"rigid\s+(?:abdomen|belly)|rebound\s+tenderness",
             r"pain\s+(?:in|at)\s+(?:the\s+)?(?:right\s+lower\s+quadrant|rlq)",
+            r"pain[^.]{0,40}(?:moving|moved|migrat\w*|shift\w*)\s+(?:to|into)\s+(?:the\s+)?(?:right\s+lower|rlq|lower\s+right)",
+            r"(?:right\s+lower\s+quadrant|\brlq\b)\s+(?:pain|tenderness)|\bappendicitis\b",
         ),
         "Same-day emergency evaluation (appendicitis, perforation, ischemia, AAA must be excluded).",
     ),

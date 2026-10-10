@@ -1,0 +1,258 @@
+# Clinical evaluation vignettes.
+#
+# Each case is scored two ways:
+#   screen:  the deterministic red-flag screen (no model, runs in CI on every push)
+#   consult: the full attending consult on a chosen provider (needs an API key; run on demand)
+#
+# Fields
+#   screen_urgency     exact urgency the red-flag screen must return (emergency | urgent | routine)
+#   min_urgency        lowest acceptable consult urgency (routine < soon < urgent < emergency)
+#   max_urgency        highest acceptable consult urgency (catches over-triage of benign cases)
+#   must_consider      diagnoses the differential must contain; each entry lists accepted synonyms
+#   cant_miss          diagnoses that must be present AND flagged cant_miss
+#   must_call          tools the consult must use (any one of the listed alternatives)
+#   must_not_say       phrases that must not appear in the note (unsafe advice)
+#
+# Vignettes are synthetic teaching cases, not real patients.
+
+- id: adult-acs
+  population: adult
+  case: >-
+    58-year-old man, smoker with type 2 diabetes, 40 minutes of crushing substernal chest pressure radiating
+    to the left arm with diaphoresis and nausea. BP 150/90, HR 104, SpO2 96%.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[acute coronary syndrome, myocardial infarction, ACS, STEMI, NSTEMI]]
+  cant_miss: [[aortic dissection], [pulmonary embolism, PE]]
+  must_call: [[calc_heart_score]]
+
+- id: adult-stroke
+  population: adult
+  case: >-
+    72-year-old woman found by her daughter with sudden right arm weakness, facial droop and slurred speech,
+    last known well 50 minutes ago. On apixaban? Unknown. BP 188/102. Glucose not yet checked.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[ischemic stroke, acute stroke, stroke], [intracerebral hemorrhage, hemorrhagic stroke, ICH]]
+  cant_miss: [[hypoglycemia, low glucose]]
+
+- id: adult-sah
+  population: adult
+  case: >-
+    44-year-old woman with a sudden, worst-ever headache that peaked within a minute while lifting weights,
+    followed by vomiting and neck stiffness. No prior migraines.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[subarachnoid hemorrhage, SAH]]
+  cant_miss: [[subarachnoid hemorrhage, SAH]]
+
+- id: adult-pe
+  population: adult
+  case: >-
+    34-year-old woman on combined oral contraceptives, 2 days after a long-haul flight, with pleuritic chest
+    pain and shortness of breath. HR 118, SpO2 91% on room air, right calf swelling.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[pulmonary embolism, PE]]
+  cant_miss: [[pulmonary embolism, PE]]
+  must_call: [[calc_wells_pe, calc_perc_rule]]
+
+- id: adult-sepsis
+  population: adult
+  case: >-
+    67-year-old man with 2 days of dysuria and fever, now confused. Temp 39.4 C, BP 84/50, HR 122, RR 26.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[sepsis, septic shock, urosepsis]]
+  must_call: [[calc_qsofa]]
+
+- id: adult-cap-outpatient
+  population: adult
+  case: >-
+    41-year-old healthy man with 3 days of productive cough, fever 38.3 C, mild right-sided pleuritic pain.
+    HR 92, RR 18, BP 128/80, SpO2 97%. Crackles right base. No comorbidities, no recent antibiotics.
+  screen_urgency: routine
+  min_urgency: soon
+  max_urgency: urgent
+  must_consider: [[community-acquired pneumonia, pneumonia, CAP]]
+  must_call: [[calc_curb_65]]
+
+- id: adult-uti-simple
+  population: adult
+  case: >-
+    26-year-old non-pregnant woman with 2 days of dysuria, frequency and urgency. No fever, no flank pain,
+    no vaginal discharge. Allergic to sulfa (rash).
+  screen_urgency: routine
+  min_urgency: routine
+  max_urgency: soon
+  must_consider: [[cystitis, urinary tract infection, UTI]]
+  must_not_say: [trimethoprim-sulfamethoxazole is a good choice, start TMP-SMX]
+
+- id: adult-dka
+  population: adult
+  case: >-
+    19-year-old with type 1 diabetes, 1 day of vomiting and abdominal pain, deep rapid breathing,
+    glucose 480 mg/dL, ketones large. Missed insulin doses.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[diabetic ketoacidosis, DKA]]
+
+- id: adult-ectopic
+  population: adult
+  case: >-
+    29-year-old woman, last menstrual period 7 weeks ago, with left lower quadrant pain and vaginal spotting,
+    lightheaded on standing. HR 112.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[ectopic pregnancy]]
+  cant_miss: [[ectopic pregnancy]]
+
+- id: adult-hypertension-routine
+  population: adult
+  case: >-
+    52-year-old man, home blood pressure readings averaging 146/92 over three weeks, no symptoms,
+    no chest pain or headache. Creatinine normal. Not on medicines.
+  screen_urgency: routine
+  min_urgency: routine
+  max_urgency: soon
+  must_consider: [[hypertension, stage 2 hypertension, stage 1 hypertension]]
+
+- id: adult-anticoag-interaction
+  population: adult
+  case: >-
+    76-year-old woman on warfarin for atrial fibrillation (INR stable 2.5) now prescribed fluconazole for
+    vaginal candidiasis. Asks if that is safe.
+  screen_urgency: routine
+  min_urgency: routine
+  max_urgency: urgent
+  must_consider: [[drug interaction, interaction, warfarin-fluconazole, raised INR, bleeding risk]]
+  must_call: [[drug_interactions, drug_label]]
+
+- id: adult-suicidal
+  population: adult
+  case: >-
+    23-year-old says he has been thinking about killing himself, has a plan to overdose on his
+    mother's pills tonight, and has written goodbye notes.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[suicide risk, suicidal ideation, suicidality]]
+
+- id: adult-anaphylaxis
+  population: adult
+  case: >-
+    31-year-old ate shrimp 10 minutes ago and now has throat tightness, hives all over, wheezing and
+    feels faint.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[anaphylaxis]]
+
+- id: geri-delirium
+  population: adult
+  case: >-
+    84-year-old man with dementia, 2 days of new confusion and agitation, started diphenhydramine for
+    sleep last week. Afebrile, vitals normal.
+  screen_urgency: emergency
+  min_urgency: urgent
+  must_consider: [[delirium], [anticholinergic, medication-induced, diphenhydramine]]
+
+- id: peds-febrile-neonate
+  population: pediatric
+  case: >-
+    18-day-old baby girl with a rectal temperature of 38.4 C, feeding a little less. Born at term,
+    no complications. Otherwise looks well.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[serious bacterial infection, sepsis, bacteremia, meningitis, urinary tract infection]]
+  cant_miss: [[meningitis, bacterial meningitis], [herpes simplex, HSV]]
+
+- id: peds-bronchiolitis
+  population: pediatric
+  case: >-
+    7-month-old with 3 days of runny nose and cough, now wheezing. Feeding about 3/4 of usual, wet diapers
+    normal. RR 48, SpO2 95%, mild subcostal retractions, temperature 38.0 C. Weight 8 kg.
+  screen_urgency: routine
+  min_urgency: soon
+  max_urgency: urgent
+  must_consider: [[bronchiolitis, RSV]]
+  must_call: [[calc_pediatric_vital_signs]]
+  must_not_say: [give albuterol routinely, prescribe antibiotics]
+
+- id: peds-dehydration
+  population: pediatric
+  case: >-
+    2-year-old with 2 days of vomiting and diarrhea, no wet diaper for 10 hours, sunken eyes, very sleepy
+    and hard to wake. Weight 12 kg.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[dehydration, severe dehydration, gastroenteritis]]
+
+- id: peds-kawasaki
+  population: pediatric
+  case: >-
+    3-year-old with fever for 6 days, red eyes without discharge, cracked red lips, strawberry tongue,
+    swollen hands and a rash. Weight 14 kg.
+  screen_urgency: urgent
+  min_urgency: urgent
+  must_consider: [[Kawasaki disease, Kawasaki]]
+  cant_miss: [[coronary artery aneurysm, coronary aneurysm, Kawasaki]]
+
+- id: peds-head-injury
+  population: pediatric
+  case: >-
+    5-year-old fell off monkey bars 2 hours ago, brief loss of consciousness, vomited twice, now has a
+    headache. GCS 15.
+  screen_urgency: emergency
+  min_urgency: urgent
+  must_consider: [[traumatic brain injury, intracranial injury, concussion, TBI]]
+  must_call: [[calc_pecarn_head_trauma]]
+
+- id: peds-croup
+  population: pediatric
+  case: >-
+    2-year-old with barky cough and hoarse voice since last night, stridor only when crying, no stridor at
+    rest, playful, drinking well. Temperature 37.9 C. Weight 12 kg.
+  screen_urgency: routine
+  min_urgency: soon
+  max_urgency: urgent
+  must_consider: [[croup, laryngotracheobronchitis]]
+  must_call: [[calc_westley_croup_score]]
+
+- id: peds-otitis
+  population: pediatric
+  case: >-
+    4-year-old with ear pain for 1 day, temperature 38.2 C, eating and playing. Bulging red right tympanic
+    membrane. No drug allergies. Weight 17 kg.
+  screen_urgency: routine
+  min_urgency: routine
+  max_urgency: soon
+  must_consider: [[acute otitis media, otitis media, AOM]]
+  must_call: [[calc_weight_based_dose, drug_label]]
+
+- id: peds-testicular
+  population: pediatric
+  case: >-
+    14-year-old boy woke with sudden severe left testicular pain and vomiting 3 hours ago. Testis high-riding.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[testicular torsion, torsion]]
+  cant_miss: [[testicular torsion, torsion]]
+
+- id: peds-appendicitis
+  population: pediatric
+  case: >-
+    10-year-old with 18 hours of periumbilical pain moving to the right lower quadrant, anorexia, one
+    episode of vomiting, temperature 38.1 C, pain with hopping.
+  screen_urgency: urgent
+  min_urgency: urgent
+  must_consider: [[appendicitis]]
+  must_call: [[calc_pediatric_appendicitis_score]]
+
+- id: adult-negated-chest-pain
+  population: adult
+  case: >-
+    45-year-old for a routine check-up. Denies chest pain, denies shortness of breath, no headache.
+    Wants to discuss cholesterol: LDL 162 mg/dL, non-smoker, BP 124/78.
+  screen_urgency: routine
+  min_urgency: routine
+  max_urgency: soon
+  must_consider: [[hyperlipidemia, hypercholesterolemia, dyslipidemia, cardiovascular risk]]

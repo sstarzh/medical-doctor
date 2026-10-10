@@ -35,3 +35,5 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - run: python -m pytest -q
+      - name: Red-flag screen evals (deterministic)
+        run: medical-doctor-mcp eval
