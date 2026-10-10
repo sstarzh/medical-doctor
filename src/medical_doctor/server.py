@@ -23,7 +23,7 @@ from . import __version__, calculators, consult_note, pediatric, physician, safe
 from .config import Settings
 from .identity import AuthRequired, current_principal
 from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
-from .skills import load_skills
+from .skills import freshness as skill_freshness, load_skills
 
 log = logging.getLogger("medical_doctor")
 audit = logging.getLogger("medical_doctor.audit")
@@ -423,9 +423,15 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
     # --- Skills ----------------------------------------------------------
 
     @mcp.tool(annotations=READ_ONLY)
-    def list_skills() -> list[dict[str, str]]:
-        """List the clinical skills (specialty playbooks) available on this server."""
-        return [{"name": s.name, "description": s.description} for s in load_skills().values()]
+    def list_skills() -> list[dict[str, Any]]:
+        """List the clinical skills (specialty playbooks) on this server, with review freshness:
+        status current / review_due, last_reviewed date, clinical_review (pending|approved), and cited
+        guideline editions older than 5 years that should be checked for an update."""
+        out = []
+        for s in load_skills().values():
+            f = skill_freshness(s)
+            out.append({"name": s.name, "description": s.description, "freshness": {k: v for k, v in f.items() if k != "skill"}})
+        return out
 
     @mcp.tool(annotations=READ_ONLY)
     def get_skill(name: str) -> str:

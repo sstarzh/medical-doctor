@@ -1,6 +1,10 @@
 ---
 name: pulmonology
 description: Pulmonary consults — dyspnea and hypoxemia workup, asthma (GINA), COPD (GOLD), pulmonary embolism (Wells, PERC, age-adjusted D-dimer), pneumonia, pleural effusion, lung nodules, and sleep apnea. Use for respiratory symptoms or lung findings.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Pulmonology

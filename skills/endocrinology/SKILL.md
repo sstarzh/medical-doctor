@@ -1,6 +1,10 @@
 ---
 name: endocrinology
 description: Endocrine and metabolic consults — type 1/type 2 diabetes management (ADA Standards), DKA/HHS, hypoglycemia, thyroid disease, adrenal insufficiency, calcium disorders, obesity pharmacotherapy, and osteoporosis. Use for glucose, thyroid, adrenal, bone or weight questions.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Endocrinology

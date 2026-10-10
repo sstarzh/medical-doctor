@@ -1,6 +1,10 @@
 ---
 name: gastroenterology
 description: Gastroenterology and hepatology consults — abdominal pain localization, GI bleeding (Glasgow-Blatchford), liver tests and cirrhosis (MELD-Na, decompensation), pancreatitis, IBD vs IBS, GERD, and colorectal cancer screening. Use for GI or liver symptoms and findings.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Gastroenterology & Hepatology

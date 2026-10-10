@@ -1,6 +1,10 @@
 ---
 name: geriatrics
 description: Care of older adults — atypical presentations, delirium, falls, polypharmacy and Beers criteria, frailty, cognitive impairment, goals of care, and time-to-benefit for screening and prevention. Use when the patient is 65 or older or frail.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Geriatrics

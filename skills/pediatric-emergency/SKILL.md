@@ -1,6 +1,10 @@
 ---
 name: pediatric-emergency
 description: Pediatric emergency medicine — PALS approach, shock and sepsis, respiratory emergencies (asthma, croup, bronchiolitis, foreign body, epiglottitis), seizures and status epilepticus, head trauma (PECARN), dehydration, surgical abdomen in children, ingestions and button batteries, anaphylaxis, DKA, and child abuse recognition. Use for any acutely ill or injured child.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Pediatric Emergency Medicine

@@ -1,6 +1,10 @@
 ---
 name: emergency-triage
 description: Emergency recognition and disposition — ABCDE, vital-sign danger thresholds, time-critical syndromes (stroke, STEMI, sepsis, anaphylaxis, PE, DKA), crisis resources, and safe-disposition rules. Use whenever a case might need emergency or same-day care.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Emergency Triage

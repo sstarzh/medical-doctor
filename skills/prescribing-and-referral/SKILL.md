@@ -1,6 +1,10 @@
 ---
 name: prescribing-and-referral
 description: How to propose medicines and referrals safely as calls to action — draft_prescription and draft_referral, what the automated checks mean, controlled-substance and pediatric rules, referral urgency, and how to present drafts to patients and clinicians. Use whenever treatment with a prescription medicine or a specialist referral is being considered.
+metadata:
+  last_reviewed: "2026-10-10"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Prescribing and Referral (Drafts, Not Orders)

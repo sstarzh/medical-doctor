@@ -1,6 +1,10 @@
 ---
 name: evidence-based-medicine
 description: Finding, grading and citing evidence — hierarchy of evidence, GRADE, NNT/NNH, absolute vs relative risk, guideline sources by specialty, and rules against fabricated citations. Use whenever making a management recommendation or citing a study.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Evidence-Based Medicine

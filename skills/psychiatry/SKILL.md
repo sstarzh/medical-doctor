@@ -1,6 +1,10 @@
 ---
 name: psychiatry
 description: Mental health consults — suicide risk assessment and safety planning, depression (PHQ-9) and anxiety (GAD-7), bipolar screening before antidepressants, psychosis, substance use and withdrawal (alcohol, opioids), and psychopharmacology safety. Use for any mental health, behavior, or substance question.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Psychiatry

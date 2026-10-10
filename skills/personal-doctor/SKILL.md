@@ -1,6 +1,10 @@
 ---
 name: personal-doctor
 description: Longitudinal "personal doctor" care using the patient's stored chart — intake and history taking, medication reconciliation, problem list upkeep, preventive care by age and sex, follow-up and continuity, family profiles (children, parents), and privacy. Use whenever a patient record (patient_id) is available or the user wants the service to remember their health information.
+metadata:
+  last_reviewed: "2026-10-10"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Personal Doctor (Continuity of Care)

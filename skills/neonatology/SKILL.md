@@ -1,6 +1,10 @@
 ---
 name: neonatology
 description: Newborn and young infant care (0-3 months) — normal newborn course, feeding and weight loss, jaundice (AAP 2022), fever and neonatal sepsis/HSV, hypoglycemia, BRUE, spit-up vs GERD, colic, umbilical and skin problems, safe sleep, and newborn preventive care. Use for any baby under 3 months or questions about a newborn.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Neonatology & Young Infants

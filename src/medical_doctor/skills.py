@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import date
 from functools import lru_cache
 from pathlib import Path
 
@@ -23,10 +24,15 @@ class Skill:
     description: str
     body: str
     path: Path
+    metadata: dict[str, str] = field(default_factory=dict)
 
     @property
     def full_text(self) -> str:
-        return f"# Skill: {self.name}\n_{self.description}_\n\n{self.body.strip()}\n"
+        f = freshness(self)
+        stamp = f"Last reviewed {f['last_reviewed'] or 'never'}"
+        if f["status"] != "current":
+            stamp += " — REVIEW OVERDUE: confirm recommendations against current guidelines before relying on them"
+        return f"# Skill: {self.name}\n_{self.description}_\n_{stamp}._\n\n{self.body.strip()}\n"
 
 
 def skills_dir() -> Path:
@@ -52,7 +58,59 @@ def parse_skill(path: Path) -> Skill:
         raise ValueError(f"{path}: frontmatter needs name and description")
     if name != path.parent.name:
         raise ValueError(f"{path}: name '{name}' must match folder '{path.parent.name}'")
-    return Skill(name=name, description=desc.strip(), body=body, path=path)
+    md = meta.get("metadata") or {}
+    if not isinstance(md, dict):
+        raise ValueError(f"{path}: metadata must be a mapping")
+    return Skill(name=name, description=desc.strip(), body=body, path=path, metadata={str(k): str(v) for k, v in md.items()})
+
+
+# --- guideline freshness ------------------------------------------------------
+
+GUIDELINE_MAX_AGE_YEARS = 5
+_GUIDELINE_CITE = re.compile(
+    r"\b((?:[A-Z][A-Za-z]*[/&-])*(?:AAP|ACC|AHA|ACOG|ADA|ATS|IDSA|PIDS|USPSTF|CDC|NICE|WHO|GOLD|GINA|KDIGO|ESC|"
+    r"NASPGHAN|ESPGHAN|ACIP|NIAID|Fleischner|AGS|ACR|AAN|ACG|HFSA|ESH|ISH|NAEPP|SCCM|ILAE|APA|AASLD)(?:[/&-][A-Z][A-Za-z]*)*)"
+    r"[^\n.;()]{0,40}?\(?((?:19|20)\d{2})\)?"
+)
+
+
+def cited_guidelines(text: str) -> list[tuple[str, int]]:
+    """(body, year) for guideline citations such as 'AAP 2022' or 'ACC/AHA/HFSA heart failure guideline (2022)'."""
+    return sorted({(m.group(1), int(m.group(2))) for m in _GUIDELINE_CITE.finditer(text)}, key=lambda x: (x[1], x[0]))
+
+
+def freshness(skill: Skill, today: date | None = None) -> dict[str, object]:
+    today = today or date.today()
+    reviewed = skill.metadata.get("last_reviewed")
+    interval = int(skill.metadata.get("review_interval_days", "365"))
+    try:
+        reviewed_on = date.fromisoformat(reviewed) if reviewed else None
+    except ValueError:
+        reviewed_on = None
+    age = (today - reviewed_on).days if reviewed_on else None
+    old = [
+        {"guideline": g, "year": y}
+        for g, y in cited_guidelines(skill.body)
+        if today.year - y > GUIDELINE_MAX_AGE_YEARS
+    ]
+    return {
+        "skill": skill.name,
+        "last_reviewed": reviewed_on.isoformat() if reviewed_on else None,
+        "days_since_review": age,
+        "status": "never_reviewed" if age is None else ("review_due" if age > interval else "current"),
+        "clinical_review": skill.metadata.get("clinical_review", "pending"),
+        "older_guidelines": old,  # cited editions over GUIDELINE_MAX_AGE_YEARS old: check for an update
+    }
+
+
+def freshness_report(today: date | None = None) -> dict[str, object]:
+    rows = [freshness(s, today) for s in load_skills().values()]
+    return {
+        "skills": rows,
+        "review_due": [r["skill"] for r in rows if r["status"] != "current"],
+        "pending_clinical_review": [r["skill"] for r in rows if r["clinical_review"] != "approved"],
+        "older_guideline_citations": sum(len(r["older_guidelines"]) for r in rows),  # type: ignore[arg-type]
+    }
 
 
 @lru_cache(maxsize=1)
