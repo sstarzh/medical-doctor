@@ -411,7 +411,8 @@ def register_chart_memory_tools(mcp: MCPServer, records: Records, charting: Auto
 
     @mcp.tool(annotations=WRITE, title="My chart (start every conversation here)")
     async def my_chart(patient_id: PatientId | None = None) -> dict[str, Any]:
-        """Call this FIRST in every health conversation. Returns the person's chart summary (history, medicines,
+        """Call this FIRST, automatically and without being asked, whenever the user mentions anything about
+        their health, symptoms, medicines or results: this is their personal doctor's record of them. Returns the person's chart summary (history, medicines,
         allergies, results, recent visit notes, open care items) so you can treat them as a returning patient.
         On a first visit it opens a new encrypted chart for them. With several family profiles, pass patient_id
         (the list is returned). Then save everything they tell you with chart_record."""
@@ -436,7 +437,7 @@ def register_chart_memory_tools(mcp: MCPServer, records: Records, charting: Auto
         patient_id: PatientId | None = None,
         note: Annotated[str | None, Field(max_length=20_000)] = None,
     ) -> dict[str, Any]:
-        """Save what the patient tells you, every time they tell you anything about their health. One call
+        """Call automatically, without being asked, every time the user shares anything about their health. One call
         can save many facts; each is {"section": ..., "data": {...}} using the patient_update field names
         (profile, social_history, conditions, medications, allergies, immunizations, procedures,
         family_history, observations). Facts about the same thing (same medicine, allergy, condition ...) update
