@@ -53,6 +53,7 @@ class ConsultSummary(_M):
     return_precautions: list[str] = Field(default_factory=list, max_length=20)
     citations: list[Citation] = Field(default_factory=list, max_length=40)
     patient_facts: list[dict[str, Any]] = Field(default_factory=list, max_length=40)  # see OUTPUT_CONTRACT
+    patient_is_user: bool | None = None  # is the case about the person talking (vs a child, parent, friend)?
 
 
 OUTPUT_CONTRACT = """\
@@ -66,11 +67,15 @@ content as the note, no new claims:
  "recommended_evaluation": ["..."], "management": ["..."], "drafts": ["..."],
  "missing_information": ["..."], "patient_explanation": "...", "return_precautions": ["..."],
  "citations": [{"label": "...", "pmid": "12345678", "url": "...", "supports": "the claim it backs"}],
+ "patient_is_user": true,
  "patient_facts": [{"section": "profile|conditions|medications|allergies|procedures|family_history|observations|social_history|immunizations",
                     "data": {...chart fields, e.g. {"name": "lisinopril", "dose": "10 mg", "frequency": "daily"}}}]}
 Only list PMIDs/URLs you actually retrieved with a tool this consult. patient_facts holds only facts the case
 STATES about the patient (history, medicines, allergies, measurements) and that are not already in the
-<patient_chart>; never diagnoses you are proposing."""
+<patient_chart>; never diagnoses you are proposing. Include every stated fact (age or date of birth, sex,
+weight, height, conditions, medicines with doses, allergies with reactions, surgeries, family history, vitals and
+results with dates, smoking/alcohol). patient_is_user is false when the case is about someone other than the
+person writing (e.g. "my son")."""
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```\s*$", re.S)
 _URGENCY_LINE = re.compile(r"##\s*Urgency\s*\n+\s*\**\s*(EMERGENCY|URGENT|SOON|ROUTINE)", re.I)

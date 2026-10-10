@@ -116,6 +116,66 @@ class PatientService:
         return {"patient_id": patient_id, "created_patient": created, "imported": counts,
                 "skipped": converted["skipped"], "failed": failed}
 
+    # --- automatic charting -------------------------------------------------------
+
+    async def resolve_patient(
+        self, owner: str, client_id: str | None, patient_id: str | None, display_name: str | None = None
+    ) -> tuple[str | None, str]:
+        """Which chart a conversation is about. Returns (patient_id, how):
+        given | only_profile | self_profile | created (first visit: a 'self' profile is opened) | ambiguous."""
+        if patient_id:
+            return patient_id, "given"
+        patients = await self.list_patients(owner, client_id)
+        if not patients:
+            profile = {"relationship": "self", **({"name": display_name[:200]} if display_name else {})}
+            return await self.create_patient(owner, client_id, profile), "created"
+        if len(patients) == 1:
+            return patients[0]["patient_id"], "only_profile"
+        selves = [p for p in patients if p["relationship"] == "self"]
+        if len(selves) == 1:
+            return selves[0]["patient_id"], "self_profile"
+        return None, "ambiguous"
+
+    async def record_facts(
+        self, owner: str, client_id: str | None, patient_id: str, facts: list[dict[str, Any]], note: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Save stated facts, merging into existing entries (same medicine, allergy, condition ...) instead
+        of duplicating them. Invalid facts are reported, never fatal."""
+        chart = await self.chart(owner, client_id, patient_id, purpose="update")
+        saved: dict[str, int] = {}
+        rejected: list[dict[str, str]] = []
+
+        def bump(section: str) -> None:
+            saved[section] = saved.get(section, 0) + 1
+
+        for fact in facts:
+            section, data = fact.get("section"), fact.get("data")
+            if section not in SECTIONS or section == "care_plan" or not isinstance(data, dict):
+                rejected.append({"section": str(section), "reason": "not a chart section"})
+                continue
+            try:
+                if SECTIONS[section][1]:  # profile / social_history: newer statements win
+                    await self.upsert(owner, client_id, patient_id, section, data, None)
+                else:
+                    if section == "observations" and not data.get("date"):
+                        data = {**data, "date": date.today().isoformat()}
+                    clean = validate_item(section, data)
+                    match = _find_same(section, clean, chart.get(section, []))
+                    item_id = match["id"] if match else None
+                    merged = {**{k: v for k, v in (match or {}).items() if k != "id"}, **clean}
+                    item_id = await self.upsert(owner, client_id, patient_id, section, merged, item_id)
+                    if match is None:
+                        chart.setdefault(section, []).append({"id": item_id, **merged})
+                    else:
+                        match.update(merged)
+                bump(section)
+            except (RecordsError, ValueError) as exc:
+                rejected.append({"section": section, "reason": str(exc)[:200]})
+        if note:
+            await self.upsert(owner, client_id, patient_id, "notes", note, None)
+            bump("notes")
+        return {"saved": saved, "rejected": rejected}
+
     async def delete_item(self, owner: str, client_id: str | None, patient_id: str, section: str, item_id: str) -> bool:
         if section not in LIST_SECTIONS:
             raise RecordsError("Only list sections support item deletion; update singletons instead")
@@ -242,3 +302,30 @@ def to_fhir_bundle(chart: dict[str, Any]) -> dict[str, Any]:
                                "note": [{"text": c["summary"]}]}
         entries.append(res)
     return {"resourceType": "Bundle", "type": "collection", "entry": [{"resource": e} for e in entries]}
+
+
+# Natural keys: a fact about the same thing updates the existing entry instead of adding a duplicate.
+_KEYS = {
+    "conditions": ("name",),
+    "medications": ("name",),
+    "allergies": ("substance",),
+    "immunizations": ("vaccine", "date"),
+    "procedures": ("name", "date"),
+    "family_history": ("relation", "condition"),
+    "observations": ("name", "date"),
+}
+
+
+def _norm(v: Any) -> str:
+    return " ".join(str(v or "").lower().split())
+
+
+def _find_same(section: str, data: dict[str, Any], existing: list[dict[str, Any]]) -> dict[str, Any] | None:
+    keys = _KEYS.get(section)
+    if not keys:
+        return None  # notes: always a new entry
+    if section == "medications":  # "lisinopril" and "lisinopril 10 mg" are the same medicine
+        first = _norm(data.get("name")).split(" ")[0]
+        return next((e for e in existing if _norm(e.get("name")).split(" ")[0] == first and first), None)
+    want = tuple(_norm(data.get(k)) for k in keys)
+    return next((e for e in existing if tuple(_norm(e.get(k)) for k in keys) == want), None)

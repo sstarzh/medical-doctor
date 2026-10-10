@@ -24,7 +24,15 @@ from starlette.responses import JSONResponse, Response
 from . import __version__, calculators, consult_note, pediatric, physician, safety, sources
 from .config import Settings
 from .identity import AuthRequired, current_principal
-from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
+from .records_tools import (
+    RECORD_TOOLS,
+    AutoChart,
+    Records,
+    chart_suggestions,
+    register_chart_memory_tools,
+    register_order_tools,
+    register_record_tools,
+)
 from .observability import ToolTimingMiddleware, consult_span, record_consult
 from .skills import freshness as skill_freshness, load_skills
 
@@ -48,17 +56,16 @@ Workflow for any health question:
    calculator, drug-label, PubMed and trials tools here, and the skills (`list_skills`/`get_skill`).
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
 4. `search` / `fetch` find and read skills, calculators and PubMed articles.
-5. Personal doctor. The encrypted chart is the ONLY memory that survives between conversations;
-   nothing is saved unless you call a write tool (`consult` itself never saves).
-   - At the start of every health conversation call `patient_list`. If the user has a profile, use its
-     `patient_id` (read it with `patient_chart`, pass it to `consult`).
-   - When the user shares lasting facts about themselves or a family member (age/date of birth, sex,
-     weight, conditions, medicines, allergies, surgeries, family history, results), offer once to keep them
-     in their chart; after they agree, `patient_create` (if no profile yet) and `patient_update` each fact.
-     `consult` returns `suggested_chart_updates` ready to save. Save only facts the user stated or confirmed,
-     never your hypotheses.
-   - `patient_import_fhir` and `ehr_connect` bring in records from hospitals and patient portals.
-   - The `personal_doctor_visit` / `patient_intake` prompts run a full visit or intake.
+5. Personal doctor: you are this person's doctor and the encrypted chart is your memory of them.
+   - FIRST call `my_chart` in every health conversation. It returns their history (or opens a chart on
+     their first visit). Greet returning patients accordingly and use what is on file.
+   - EVERY time they share anything about their health (symptoms, age, weight, conditions, medicines,
+     allergies, surgeries, family/social history, results, how a treatment went), save it right away with
+     `chart_record` (many facts per call; repeats update existing entries) and add a short `note` in their
+     words. Save what they state, never your hypotheses.
+   - `consult` loads the chart and saves the visit automatically (see its `chart` result).
+   - Family members get their own profile (`patient_create` with relationship); pass its `patient_id`.
+   - `patient_import_fhir` / `ehr_connect` bring in hospital and portal records.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
    presented as calls to action — never as prescriptions or orders.
 
@@ -91,22 +98,6 @@ def current_user() -> dict[str, Any]:
         "scopes": token.scopes,
     }
 
-
-def chart_suggestions(structured: dict[str, Any]) -> list[dict[str, Any]]:
-    """Facts the patient stated, validated against the chart schema, ready for patient_update.
-    Invalid or unknown entries are dropped; nothing is written here."""
-    from .records.model import SECTIONS, validate_item
-
-    out = []
-    for fact in structured.get("patient_facts") or []:
-        section, data = fact.get("section"), fact.get("data")
-        if section not in SECTIONS or section in ("care_plan", "notes") or not isinstance(data, dict):
-            continue
-        try:
-            out.append({"section": section, "data": validate_item(section, data)})
-        except ValueError:
-            continue
-    return out[:40]
 
 
 class RateLimiter:
@@ -236,6 +227,7 @@ def build_server(
     _register_tools(mcp, limiter, settings, records)
     register_record_tools(mcp, records)
     register_order_tools(mcp, records)
+    register_chart_memory_tools(mcp, records, AutoChart(records, settings.auto_chart))
     if records.service is not None:
         from .auth.store import AsyncStore
         from .ehr import EhrConnector, register_ehr_routes
@@ -274,6 +266,8 @@ def _register_routes(mcp: MCPServer, settings: Settings) -> None:
 
 
 def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, records: Records) -> None:
+    charting = AutoChart(records, settings.auto_chart)
+
     # --- Safety ----------------------------------------------------------
 
     @mcp.tool(annotations=READ_ONLY, title="Emergency red-flag screen")
@@ -306,8 +300,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         Returns a structured consult note: urgency, problem representation, ranked differential with
         can't-miss diagnoses, recommended workup, evidence-cited management, and a patient explanation.
         audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child.
-        patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
-        personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
+        The patient's chart is loaded automatically (their own, or the profile given by patient_id; a chart is
+        opened on their first visit), and after the consult the facts they stated and a visit note are saved to
+        it (see `chart` in the result). Pass patient_id when the case is about a family member. provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
         their notes, listing disagreements. depth: 'quick' (fastest; fewer tool rounds, no web search — good for
         triage and simple questions), 'standard' (default), or 'thorough' (most verification; slowest). Every depth
@@ -324,22 +319,28 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         # Audit who/when/urgency only — never the clinical text (PHI).
         audit.info("consult owner=%s client=%s urgency=%s chart=%s", who, user.get("client_id"), triage["urgency"], bool(patient_id))
         chosen = provider or settings.llm_provider
+        # The chart this conversation is about: given, the account's only/self profile, or (first visit)
+        # a new 'self' profile. Retrieval and saving happen on the server, not at the client's discretion.
+        chart = await charting.resolve(patient_id, user.get("name"))
         if not physician.credentials_for(chosen):
             return {
                 "ok": False,
                 "red_flag_screen": triage,
+                "chart": chart.public(),
                 "error": f"No {chosen} credentials on the server. Falling back to protocol mode.",
                 "protocol": physician.CHARTER,
                 "how_to_proceed": "Act as the attending yourself: follow `protocol`, load relevant skills with "
-                "get_skill, and call this server's calculator/drug/PubMed tools to verify every number and claim.",
+                "get_skill, and call this server's calculator/drug/PubMed tools to verify every number and claim. "
+                "Save every fact the patient states with chart_record.",
                 "disclaimer": DISCLAIMER,
             }
+
         async def load_summary() -> str | None:
-            if not patient_id:
+            if not chart.patient_id:
                 return None
             from .records.service import summarize
 
-            return summarize(await records.chart(patient_id, purpose="consult"))
+            return summarize(await records.chart(chart.patient_id, purpose="consult"))
 
         # Independent setup steps run concurrently (each is a database or registry round trip).
         chart_summary, _, tools = await asyncio.gather(load_summary(), limiter.check(who), physician_tools())
@@ -352,7 +353,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
 
         engine = physician.make_engine(settings, chosen, depth)
         started = time.monotonic()
-        with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(patient_id),
+        with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(chart.patient_id),
                                                              "medical_doctor.second_opinion": second_opinion}) as span:
             result = await physician.run_consult(
                 case=case,
@@ -370,14 +371,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             )
             result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)
-        result["suggested_chart_updates"] = chart_suggestions(result.get("structured") or {})
-        result["saved_to_chart"] = False
-        result["memory_note"] = (
-            "consult does not save anything. Offer to record confirmed facts with patient_update "
-            f"(patient_id {patient_id})." if patient_id else
-            "Nothing from this conversation is saved yet. If the user wants their doctor to remember them next time, "
-            "create a profile with patient_create and save the confirmed facts (suggested_chart_updates) with patient_update."
-        )
+        if result.get("ok"):
+            await charting.save_visit(chart, case, question, result.get("structured") or {})
+        result["chart"] = chart.public()
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
         return result

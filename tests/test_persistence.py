@@ -69,17 +69,67 @@ def test_chart_suggestions_keep_only_valid_stated_facts():
                    {"section": "profile", "data": {"relationship": "self", "weight_kg": 82.0}}]
 
 
-async def test_consult_says_nothing_was_saved(monkeypatch):
-    from medical_doctor import physician
-    from medical_doctor.server import mcp
-
+def _fake_consult(structured):
     async def fake_run(**kw):
-        return {"ok": True, "note": "n", "structured": {"urgency": "routine",
-                "patient_facts": [{"section": "conditions", "data": {"name": "asthma"}}]}}
+        fake_run.seen = kw
+        return {"ok": True, "note": "n", "structured": structured}
+    return fake_run
 
+
+async def test_first_consult_opens_a_chart_and_saves_everything_stated(monkeypatch, settings):
+    from medical_doctor import physician
+
+    server = build_server(settings, local_mode=True)
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "run_consult", fake_run)
-    async with Client(mcp) as c:
-        r = _p(await c.call_tool("consult", {"case": "I have asthma and a cough"}))
-    assert r["saved_to_chart"] is False and "patient_create" in r["memory_note"]
-    assert r["suggested_chart_updates"] == [{"section": "conditions", "data": {"name": "asthma", "status": "active"}}]
+    first = _fake_consult({"urgency": "routine", "patient_is_user": True, "problem_representation": "41M with cough",
+                           "differential": [{"diagnosis": "acute bronchitis", "likelihood": "likely"}],
+                           "patient_facts": [{"section": "conditions", "data": {"name": "asthma"}},
+                                             {"section": "medications", "data": {"name": "albuterol", "dose": "2 puffs"}},
+                                             {"section": "profile", "data": {"weight_kg": 82}},
+                                             {"section": "observations", "data": {"name": "temperature", "value": "38.1", "unit": "C"}}]})
+    monkeypatch.setattr(physician, "run_consult", first)
+    async with Client(server) as c:  # conversation 1, no profile yet
+        r = _p(await c.call_tool("consult", {"case": "I'm 41, asthma, on albuterol, 82 kg, cough and 38.1 fever"}))
+    assert r["chart"]["resolved_by"] == "created" and r["chart"]["saved"]["saved"]["notes"] == 1
+    pid = r["chart"]["patient_id"]
+
+    second = _fake_consult({"urgency": "routine", "patient_is_user": True,
+                            "patient_facts": [{"section": "medications", "data": {"name": "Albuterol HFA", "dose": "4 puffs"}}]})
+    monkeypatch.setattr(physician, "run_consult", second)
+    async with Client(build_server(settings, local_mode=True)) as c:  # conversation 2, new server instance
+        r2 = _p(await c.call_tool("consult", {"case": "cough is better, now using 4 puffs"}))
+        assert r2["chart"] == {"patient_id": pid, "resolved_by": "only_profile", "saved": r2["chart"]["saved"]}
+        assert "asthma" in second.seen["chart_summary"] and "albuterol" in second.seen["chart_summary"]  # retrieved
+        chart = _p(await c.call_tool("patient_chart", {"patient_id": pid}))
+    assert [m["dose"] for m in chart["medications"]] == ["4 puffs"]  # merged, not duplicated
+    assert chart["profile"]["weight_kg"] == 82 and chart["conditions"][0]["name"] == "asthma"
+    assert chart["observations"][0]["date"] and len(chart["notes"]) == 2
+
+
+async def test_consult_about_someone_else_is_not_filed_in_my_chart(monkeypatch, settings):
+    from medical_doctor import physician
+
+    server = build_server(settings, local_mode=True)
+    monkeypatch.setattr(physician, "credentials_for", lambda p: True)
+    monkeypatch.setattr(physician, "run_consult", _fake_consult({"urgency": "urgent", "patient_is_user": False,
+        "patient_facts": [{"section": "profile", "data": {"date_of_birth": "2023-01-01"}}]}))
+    async with Client(server) as c:
+        r = _p(await c.call_tool("consult", {"case": "my 3 year old has a fever"}))
+        assert r["chart"]["saved"]["saved"] == {} and "someone else" in r["chart"]["note"]
+        chart = _p(await c.call_tool("patient_chart", {"patient_id": r["chart"]["patient_id"]}))
+    assert "date_of_birth" not in chart["profile"] and chart["notes"] == []
+
+
+async def test_my_chart_and_chart_record(settings):
+    server = build_server(settings, local_mode=True)
+    async with Client(server) as c:
+        first = _p(await c.call_tool("my_chart", {}))
+        assert first["first_visit"] and first["resolved_by"] == "created"
+        saved = _p(await c.call_tool("chart_record", {"facts": [
+            {"section": "allergies", "data": {"substance": "penicillin", "reaction": "hives"}},
+            {"section": "family_history", "data": {"relation": "father", "condition": "MI", "age_at_onset": 52}},
+            {"section": "allergies", "data": {"reaction": "no substance"}}], "note": "Told me about allergies today"}))
+        assert saved["saved"] == {"allergies": 1, "family_history": 1, "notes": 1} and len(saved["rejected"]) == 1
+    async with Client(build_server(settings, local_mode=True)) as c:
+        again = _p(await c.call_tool("my_chart", {}))
+    assert not again["first_visit"] and "penicillin" in again["summary"] and again["recent_visits"][0]["title"] == "Patient update"

@@ -65,6 +65,7 @@ class Settings:
     llm_effort: str = "medium"  # effort for depth="standard"
     fast_mode: bool = False  # Claude fast mode: ~2.5x faster output at 2x price (Claude API only)
     consult_depth: str = "standard"  # quick | standard | thorough
+    auto_chart: bool = True  # open a chart on first visit and save stated facts after each consult
     provider_models: dict[str, str] = field(default_factory=dict)  # per-provider model overrides
     second_opinion_providers: tuple[str, ...] = ()
     openai_reasoning_effort: str = ""
@@ -198,6 +199,7 @@ def load_settings() -> Settings:
         llm_effort=e("MEDICAL_DOCTOR_EFFORT", "medium"),
         fast_mode=_flag("MEDICAL_DOCTOR_FAST_MODE"),
         consult_depth=e("MEDICAL_DOCTOR_CONSULT_DEPTH", "standard").strip().lower(),
+        auto_chart=_flag("MEDICAL_DOCTOR_AUTO_CHART", True),
         provider_models={
             k: v for k, v in {
                 "anthropic": e("MEDICAL_DOCTOR_ANTHROPIC_MODEL", ""),

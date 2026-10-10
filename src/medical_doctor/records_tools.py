@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Annotated, Any, Literal
 
 from mcp.server.mcpserver import MCPServer
@@ -13,7 +15,7 @@ from pydantic import Field
 from . import orders, sources
 from .identity import AuthRequired, Principal, current_principal
 from .preventive import preventive_care
-from .records.model import SECTIONS
+from .records.model import SECTIONS, validate_item
 from .records.service import PatientService, RecordsError, summarize, to_fhir_bundle
 
 READ = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
@@ -31,7 +33,116 @@ PatientId = Annotated[str, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")]
 RECORD_WRITE_TOOLS = {
     "patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update", "patient_import_fhir", "ehr_connect",
 }
-RECORD_TOOLS = RECORD_WRITE_TOOLS | {"patient_list", "patient_chart", "patient_export", "patient_access_log", "preventive_care_due"}
+RECORD_TOOLS = RECORD_WRITE_TOOLS | {"my_chart", "patient_list", "patient_chart", "patient_export", "patient_access_log", "preventive_care_due"}
+
+
+@dataclass
+class ChartContext:
+    """Which chart a conversation is about and what happened to it."""
+
+    patient_id: str | None = None
+    resolved_by: str = "none"  # given | only_profile | self_profile | created | ambiguous | disabled
+    owner: str | None = None
+    client_id: str | None = None
+    profiles: list[dict[str, Any]] = field(default_factory=list)
+    saved: dict[str, Any] | None = None
+    reason: str = ""
+
+    def public(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"patient_id": self.patient_id, "resolved_by": self.resolved_by}
+        if self.resolved_by == "created":
+            out["note"] = "First visit: a new chart was opened for this person. Tell them it is encrypted and private."
+        if self.resolved_by == "ambiguous":
+            out["profiles"] = self.profiles
+            out["note"] = "This account has several profiles and none is 'self': pass patient_id to consult."
+        if self.saved is not None:
+            out["saved"] = self.saved
+        if self.reason:
+            out["note"] = self.reason
+        return out
+
+
+def chart_suggestions(structured: dict[str, Any]) -> list[dict[str, Any]]:
+    """Facts the patient stated (from the consult summary), validated against the chart schema."""
+    out = []
+    for fact in structured.get("patient_facts") or []:
+        section, data = fact.get("section"), fact.get("data")
+        if section not in SECTIONS or section in ("care_plan", "notes") or not isinstance(data, dict):
+            continue
+        try:
+            out.append({"section": section, "data": validate_item(section, data)})
+        except ValueError:
+            continue
+    return out[:40]
+
+
+def visit_note(case: str, question: str | None, structured: dict[str, Any]) -> dict[str, Any]:
+    ddx = "; ".join(
+        f"{d.get('diagnosis')} ({d.get('likelihood', '')}{', cannot miss' if d.get('cant_miss') else ''})"
+        for d in (structured.get("differential") or [])[:6]
+    )
+    parts = [f"Patient reported:\n{case.strip()[:12000]}"]
+    if question:
+        parts.append(f"Question: {question.strip()[:2000]}")
+    if structured.get("urgency"):
+        parts.append(f"Urgency: {structured['urgency']}" + (f" ({structured.get('urgency_reason')})" if structured.get("urgency_reason") else ""))
+    if ddx:
+        parts.append(f"Differential: {ddx}")
+    for label, key in (("Recommended evaluation", "recommended_evaluation"), ("Management", "management"),
+                       ("Return precautions", "return_precautions")):
+        if items := structured.get(key):
+            parts.append(f"{label}: " + "; ".join(str(x) for x in items[:8]))
+    title = (structured.get("problem_representation") or case.strip().split("\n")[0])[:150]
+    return {"title": f"Consult: {title}", "text": "\n\n".join(parts)[:20000], "date": date.today().isoformat()}
+
+
+class AutoChart:
+    """Server-side chart memory: resolve (and on first visit open) the patient's chart before a consult,
+    and save what the patient stated plus a visit note after it. The client model cannot forget to."""
+
+    def __init__(self, records: "Records", enabled: bool):
+        self.records = records
+        self.enabled = enabled
+
+    async def resolve(self, patient_id: str | None, display_name: str | None) -> ChartContext:
+        if self.records.service is None:
+            if patient_id:  # asked for a chart that cannot be read: say so instead of silently skipping it
+                raise ToolError(self.records.disabled_reason or "Patient records are not enabled on this server.")
+            return ChartContext(resolved_by="disabled")
+        if not (self.enabled or patient_id):
+            return ChartContext(resolved_by="disabled")
+        try:
+            p = self.records.who()
+        except ToolError:
+            if patient_id:
+                raise
+            return ChartContext(resolved_by="disabled")
+        svc = self.records.service
+        if not self.enabled:  # explicit patient_id only
+            return ChartContext(patient_id=patient_id, resolved_by="given", owner=p.owner, client_id=p.client_id)
+        try:
+            pid, how = await svc.resolve_patient(p.owner, p.client_id, patient_id, display_name)
+        except RecordsError as exc:
+            return ChartContext(resolved_by="disabled", reason=str(exc))
+        ctx = ChartContext(patient_id=pid, resolved_by=how, owner=p.owner, client_id=p.client_id)
+        if how == "ambiguous":
+            ctx.profiles = await svc.list_patients(p.owner, p.client_id)
+        return ctx
+
+    async def save_visit(self, ctx: ChartContext, case: str, question: str | None, structured: dict[str, Any]) -> None:
+        if not (self.enabled and ctx.patient_id and ctx.owner):
+            return
+        if ctx.resolved_by != "given" and structured.get("patient_is_user") is False:
+            ctx.saved = {"saved": {}, "rejected": []}
+            ctx.reason = ("This consult was about someone else (e.g. a child or parent), so it was not filed in this "
+                          "chart. Create their profile with patient_create (relationship) and pass its patient_id.")
+            return
+        try:
+            ctx.saved = await self.records.service.record_facts(  # type: ignore[union-attr]
+                ctx.owner, ctx.client_id, ctx.patient_id, chart_suggestions(structured), visit_note(case, question, structured)
+            )
+        except RecordsError as exc:
+            ctx.reason = f"Chart not updated: {exc}"
 
 
 class Records:
@@ -275,3 +386,57 @@ def register_ehr_tool(mcp: MCPServer, records: Records, connector: Any) -> None:
         out["instructions"] = (f"Open connect_url in a browser within 10 minutes, sign in to {VENDORS[portal]} and approve "
                                "access. The page confirms what was imported; then review the chart with patient_chart.")
         return out
+
+
+def register_chart_memory_tools(mcp: MCPServer, records: Records, charting: AutoChart) -> None:
+    from .records.service import summarize
+
+    def _display_name() -> str | None:
+        token = get_access_token()
+        return (token.claims or {}).get("name") if token else None
+
+    @mcp.tool(annotations=WRITE, title="My chart (start every conversation here)")
+    async def my_chart(patient_id: PatientId | None = None) -> dict[str, Any]:
+        """Call this FIRST in every health conversation. Returns the person's chart summary (history, medicines,
+        allergies, results, recent visit notes, open care items) so you can treat them as a returning patient.
+        On a first visit it opens a new encrypted chart for them. With several family profiles, pass patient_id
+        (the list is returned). Then save everything they tell you with chart_record."""
+        ctx = await charting.resolve(patient_id, _display_name())
+        if ctx.resolved_by == "disabled":
+            raise ToolError(ctx.reason or records.disabled_reason or "Patient records are not enabled for this sign-in.")
+        if not ctx.patient_id:
+            return ctx.public()
+        chart = await records.chart(ctx.patient_id, purpose="read")
+        notes = sorted(chart.get("notes", []), key=lambda n: n.get("date") or "", reverse=True)[:5]
+        return {
+            **ctx.public(),
+            "first_visit": ctx.resolved_by == "created",
+            "summary": summarize(chart),
+            "recent_visits": [{"date": n.get("date"), "title": n.get("title")} for n in notes],
+            "profiles": await records.service.list_patients(ctx.owner, ctx.client_id),  # type: ignore[union-attr]
+        }
+
+    @mcp.tool(annotations=WRITE, title="Record in chart")
+    async def chart_record(
+        facts: Annotated[list[dict[str, Any]], Field(max_length=60)],
+        patient_id: PatientId | None = None,
+        note: Annotated[str | None, Field(max_length=20_000)] = None,
+    ) -> dict[str, Any]:
+        """Save what the patient tells you, every time they tell you anything about their health. One call
+        can save many facts; each is {"section": ..., "data": {...}} using the patient_update field names
+        (profile, social_history, conditions, medications, allergies, immunizations, procedures,
+        family_history, observations). Facts about the same thing (same medicine, allergy, condition ...) update
+        the existing entry instead of duplicating it. `note` adds a dated visit note (what they reported, in
+        their words). Without patient_id the person's own chart is used (opened on first visit). Save only
+        what they stated or confirmed, never your hypotheses."""
+        ctx = await charting.resolve(patient_id, _display_name())
+        if not ctx.patient_id or not ctx.owner:
+            if ctx.resolved_by == "ambiguous":
+                return ctx.public()
+            raise ToolError(ctx.reason or records.disabled_reason or "Patient records are not enabled for this sign-in.")
+        visit = {"title": "Patient update", "text": note, "date": date.today().isoformat()} if note else None
+        try:
+            saved = await records.service.record_facts(ctx.owner, ctx.client_id, ctx.patient_id, facts, visit)  # type: ignore[union-attr]
+        except RecordsError as exc:
+            raise ToolError(str(exc)) from None
+        return {**ctx.public(), **saved}
