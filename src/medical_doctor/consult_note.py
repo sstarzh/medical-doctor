@@ -128,8 +128,9 @@ def _salvage(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Coerce the common near-misses models produce and keep every field that can be kept."""
     notes: list[str] = []
     data = dict(raw)
-    if (u := _urgency(data.get("urgency"))) is not None:
-        data["urgency"] = u
+    # Always normalize: a list/dict urgency would otherwise reach a set lookup unhashed. None falls back
+    # to the note's "## Urgency" line.
+    data["urgency"] = _urgency(data.get("urgency"))
     ddx = []
     for d in data.get("differential") or []:
         if isinstance(d, str):

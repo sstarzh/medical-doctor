@@ -1,3 +1,4 @@
+import pytest
 """Structured consult output and citation verification."""
 
 import json
@@ -105,3 +106,12 @@ def test_live_model_near_misses_are_repaired():
 def test_urgency_text_uses_the_first_urgency_word():
     assert consult_note._urgency("ROUTINE - see your GP; go to the emergency department if worse") == "routine"
     assert consult_note._urgency("EMERGENCY: call 911") == "emergency"
+
+
+@pytest.mark.parametrize("value", [["high"], {"level": "high"}, 3, None, "unknown"])
+def test_odd_urgency_shapes_never_crash(value):
+    import json as _json
+
+    note = "## Urgency\nURGENT\n\n```json\n" + _json.dumps({"urgency": value, "differential": ["Pneumonia"]}) + "\n```"
+    _, s = consult_note.structure(note, None)
+    assert s["urgency"] == "urgent" and s["source"] == "model"
