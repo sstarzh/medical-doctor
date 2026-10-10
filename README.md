@@ -16,6 +16,7 @@ It has five layers:
 
 | Tool | Purpose |
 |---|---|
+| `second_opinion` | A second opinion on earlier advice (this service's or the patient's own doctor's): blinded independent work-up, then verdict, misses, safety concerns and next steps |
 | `consult` | Full attending consult note for adults and children (`audience`: `clinician`, `patient`, or `caregiver` for a parent) |
 | `red_flag_screen` | Deterministic emergency triage of free text. Call it first. |
 | `calc_*` (18) | eGFR (CKD-EPI 2021), Cockcroft-Gault, CHA2DS2-VASc, HAS-BLED, HEART, QTc, MAP, Wells PE, PERC, CURB-65, qSOFA, Centor/McIsaac, MELD-Na, GCS, anion gap, corrected Ca, corrected Na, BMI |
@@ -41,6 +42,22 @@ It has five layers:
 `consult` takes optional `depth` (`quick` / `standard` / `thorough`, trading speed for verification), `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
 
 The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
+
+### How the doctor stays accurate (and fast)
+
+| Layer | When it runs | Added latency |
+|---|---|---|
+| Deterministic red-flag screen (negation-aware, about 60 rules, 35 vignettes in CI) | Every consult, before the model | under 1 ms |
+| Patient chart with lab and vital **trends** and recent visits | Every consult | one encrypted read |
+| **Self-check** of the note: can't-miss coverage, under-triage, allergy conflicts (including cross-reactive classes), children's doses without a weight, fabricated citations, uncertainty | Every consult, after the note | about 0.2 ms |
+| **One-shot revision** with the self-check findings | Only when a critical finding remains and at least 25 s of the time budget is left; kept only if it helps | one completion |
+| **Auto-escalation** to high effort | Urgent screens when the caller didn't choose a depth; emergencies stay fast | modest |
+| **`second_opinion`**: blinded independent work-up by a stronger or different model, then a critical comparison and verdict | When the patient asks, or doubts a diagnosis or treatment | about one consult |
+
+- **Who gives the second opinion.** Another configured model family (OpenAI, Meta) if available. Otherwise `claude-fable-5-1` at high effort, falling back to Opus if the account cannot use it. Set `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` to choose.
+- **What it can review.** Advice the patient pastes (from their own doctor, for example), or by default the last consult in their chart. The result is saved as a visit note.
+- **When it's suggested.** A consult whose self-check finds a wide differential or a critical issue sets `self_check.suggest_second_opinion`.
+- **Photos.** `consult(images=[...])` takes up to 4 https URLs or base64 images (rash, wound, eye, a lab report). Images are not stored.
 
 ### What `consult` returns
 
@@ -213,6 +230,8 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
 | `MEDICAL_DOCTOR_CONSULT_DEPTH` | `standard` | Default consult depth: `quick` (~4 tool rounds, low effort, no web search), `standard` (8 rounds, 2 guideline searches), `thorough` (12 rounds, high effort, 5 searches). Callers can override per consult with `depth`. |
 | `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max` |
+| `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` | `claude-fable-5-1` | Reviewer model for `second_opinion` when no other provider is configured |
+| `MEDICAL_DOCTOR_AUTO_CHART` | `1` | Open a chart on the first visit and save stated facts and visit notes automatically |
 | `MEDICAL_DOCTOR_FAST_MODE` | `0` | `1` turns on Claude fast mode (about 2.5x faster output at 2x the token price; Claude API only). Falls back to standard speed automatically when fast mode is rate-limited. |
 | `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |
 | `MEDICAL_DOCTOR_VERIFY_CITATIONS` | `1` | Check every PMID in consult notes against PubMed |
