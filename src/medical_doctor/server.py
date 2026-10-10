@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -23,6 +24,7 @@ from . import __version__, calculators, consult_note, pediatric, physician, safe
 from .config import Settings
 from .identity import AuthRequired, current_principal
 from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
+from .observability import ToolTimingMiddleware, consult_span, record_consult
 from .skills import freshness as skill_freshness, load_skills
 
 log = logging.getLogger("medical_doctor")
@@ -203,6 +205,7 @@ def build_server(
         website_url=settings.public_url or None,
         **kwargs,
     )
+    mcp.middleware.append(ToolTimingMiddleware())
     limiter = RateLimiter(settings.consult_limit_per_hour, store)
     _register_tools(mcp, limiter, settings, records)
     register_record_tools(mcp, records)
@@ -306,19 +309,24 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             except Exception:  # progress is best-effort (client may not send a progress token)
                 pass
 
-        result = await physician.run_consult(
-            case=case,
-            question=question,
-            audience=audience,
-            triage=triage,
-            tools=await physician_tools(),
-            execute_tool=execute_for_physician,
-            settings=settings,
-            chart_summary=chart_summary,
-            progress=progress,
-            engine=physician.make_engine(settings, chosen),
-            second_opinion=second_opinion,
-        )
+        engine = physician.make_engine(settings, chosen)
+        started = time.monotonic()
+        with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(patient_id),
+                                                             "medical_doctor.second_opinion": second_opinion}) as span:
+            result = await physician.run_consult(
+                case=case,
+                question=question,
+                audience=audience,
+                triage=triage,
+                tools=await physician_tools(),
+                execute_tool=execute_for_physician,
+                settings=settings,
+                chart_summary=chart_summary,
+                progress=progress,
+                engine=engine,
+                second_opinion=second_opinion,
+            )
+            record_consult(span, result, time.monotonic() - started)
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
         return result

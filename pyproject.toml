@@ -15,11 +15,13 @@ dependencies = [
   "starlette>=0.40",
   "psycopg[binary]>=3.2",
   "psycopg-pool>=3.2",
-  "openai>=3.0",  # OpenAI and Meta Llama (OpenAI-compatible) consult providers
+  "openai>=3.0",  # OpenAI, Meta (Muse Spark) and Llama consult providers (OpenAI-compatible)
+  "opentelemetry-api>=1.30",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+otel = ["opentelemetry-sdk>=1.30", "opentelemetry-exporter-otlp-proto-http>=1.30"]
 
 [project.scripts]
 medical-doctor-mcp = "medical_doctor.__main__:main"

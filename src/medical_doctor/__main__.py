@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import secrets
 import sys
@@ -57,7 +56,9 @@ def main() -> None:
                         help="no server-side sessions (for load-balanced/serverless deployments)")
     parser.add_argument("--json-response", action="store_true", help="plain JSON responses instead of SSE streams")
     args = parser.parse_args()
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from .observability import configure
+
+    configure()
 
     if args.transport == "stdio":
         from .config import load_settings
