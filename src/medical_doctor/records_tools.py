@@ -129,6 +129,20 @@ class AutoChart:
             ctx.profiles = await svc.list_patients(p.owner, p.client_id)
         return ctx
 
+    async def save_note(self, ctx: ChartContext, structured: dict[str, Any], note: dict[str, Any]) -> None:
+        """File a dated note (e.g. a second opinion) in the resolved chart, with the same someone-else guard."""
+        if not (self.enabled and ctx.patient_id and ctx.owner):
+            return
+        if ctx.resolved_by != "given" and structured.get("patient_is_user") is False:
+            ctx.reason = "About someone else: not filed in this chart. Pass that person's patient_id."
+            return
+        try:
+            ctx.saved = await self.records.service.record_facts(  # type: ignore[union-attr]
+                ctx.owner, ctx.client_id, ctx.patient_id, [], {**note, "date": date.today().isoformat()}
+            )
+        except RecordsError as exc:
+            ctx.reason = f"Chart not updated: {exc}"
+
     async def save_visit(self, ctx: ChartContext, case: str, question: str | None, structured: dict[str, Any]) -> None:
         if not (self.enabled and ctx.patient_id and ctx.owner):
             return

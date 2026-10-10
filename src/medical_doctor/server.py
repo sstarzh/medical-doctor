@@ -64,6 +64,9 @@ Workflow for any health question:
      `chart_record` (many facts per call; repeats update existing entries) and add a short `note` in their
      words. Save what they state, never your hypotheses.
    - `consult` loads the chart and saves the visit automatically (see its `chart` result).
+   - When they ask for a second opinion, or doubt a diagnosis or treatment (from this service or their own
+     doctor), call `second_opinion` (with what they were told, if it came from elsewhere). If a consult's
+     `self_check.suggest_second_opinion` is true, offer one.
    - Family members get their own profile (`patient_create` with relationship); pass its `patient_id`.
    - `patient_import_fhir` / `ehr_connect` bring in hospital and portal records.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
@@ -77,7 +80,7 @@ READ_ONLY_WEB = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempo
 
 # Tools that the inner physician model must not call: recursion, meta tools, and anything that
 # reads or writes the patient record (the consult gets the chart summary explicitly instead).
-_NOT_FOR_PHYSICIAN = {"consult", "list_skills", "get_skill", "search", "fetch", "whoami", "care_plan_update"} | RECORD_TOOLS
+_NOT_FOR_PHYSICIAN = {"consult", "second_opinion", "list_skills", "get_skill", "search", "fetch", "whoami", "care_plan_update"} | RECORD_TOOLS
 MAX_TOOL_OUTPUT_CHARS = 12_000
 MAX_CASE_CHARS = 50_000
 
@@ -373,6 +376,74 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             record_consult(span, result, time.monotonic() - started)
         if result.get("ok"):
             await charting.save_visit(chart, case, question, result.get("structured") or {})
+        result["chart"] = chart.public()
+        result["red_flag_screen"] = triage
+        result["disclaimer"] = DISCLAIMER
+        return result
+
+    @mcp.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+        title="Second opinion",
+    )
+    async def second_opinion(
+        ctx: Context,
+        prior_advice: Annotated[str | None, Field(max_length=MAX_CASE_CHARS)] = None,
+        case: Annotated[str | None, Field(max_length=MAX_CASE_CHARS)] = None,
+        question: Annotated[str | None, Field(max_length=5_000)] = None,
+        patient_id: Annotated[str | None, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")] = None,
+        audience: Literal["clinician", "patient", "caregiver"] = "patient",
+    ) -> dict[str, Any]:
+        """Use whenever the patient asks for a second opinion, or doubts or questions a diagnosis, test or
+        treatment, whether it came from this service or from their own doctor. A different, more capable model
+        first works the case up independently (without seeing the earlier advice, so it is not anchored by it),
+        then compares: verdict (agree / agree with changes / disagree), what was missed, safety concerns, and
+        next steps. prior_advice: what they were told (paste it); if omitted, the most recent consult in their
+        chart is reviewed. case: the clinical details (defaults to that consult's details). The result is saved
+        to the chart. Takes about as long as a consult."""
+        try:
+            who = current_principal(records.local_mode or settings.auth_mode == "none").owner
+        except AuthRequired:
+            who = "anonymous"
+        user = current_user()
+        chart = await charting.resolve(patient_id, user.get("name"))
+        chart_data = await records.chart(chart.patient_id, purpose="second_opinion") if chart.patient_id else None
+        if not prior_advice and chart_data:
+            visits = sorted((n for n in chart_data.get("notes", []) if str(n.get("title", "")).startswith("Consult:")),
+                            key=lambda n: n.get("date") or "")
+            if visits:
+                prior_advice = f"{visits[-1]['title']} ({visits[-1].get('date', '')})\n{visits[-1]['text']}"
+                case = case or visits[-1]["text"]
+        if not prior_advice:
+            raise ToolError("Nothing to review yet: pass prior_advice (what the patient was told) and the case details.")
+        case = case or prior_advice
+        reviewer = physician.second_opinion_engine(settings)
+        if not physician.credentials_for(reviewer.provider):
+            raise ToolError(f"No {reviewer.provider} credentials on the server for the second-opinion reviewer.")
+        triage = (await anyio.to_thread.run_sync(safety.screen, " ".join(filter(None, [case, question])))).to_dict()
+        audit.info("second_opinion owner=%s client=%s urgency=%s", who, user.get("client_id"), triage["urgency"])
+        from .records.service import summarize
+
+        _, tools = await asyncio.gather(limiter.check(who), physician_tools())
+
+        async def progress(step: int, message: str) -> None:
+            try:
+                await ctx.report_progress(step, None, message)
+            except Exception:
+                pass
+
+        started = time.monotonic()
+        with consult_span(reviewer.provider, reviewer.model, **{"medical_doctor.second_opinion": True}) as span:
+            result = await physician.run_second_opinion(
+                case=case, prior_advice=prior_advice, question=question, audience=audience, triage=triage,
+                tools=tools, execute_tool=execute_for_physician, settings=settings,
+                chart_summary=summarize(chart_data) if chart_data else None, chart=chart_data,
+                progress=progress, engine=reviewer,
+            )
+            record_consult(span, result, time.monotonic() - started)
+        if result.get("ok"):
+            verdict = (result.get("verdict") or "opinion").replace("_", " ")
+            await charting.save_note(chart, result.get("structured") or {},
+                                     {"title": f"Second opinion: {verdict}", "text": result["opinion"][:20000]})
         result["chart"] = chart.public()
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
