@@ -212,7 +212,7 @@
     2-year-old with barky cough and hoarse voice since last night, stridor only when crying, no stridor at
     rest, playful, drinking well. Temperature 37.9 C. Weight 12 kg.
   screen_urgency: routine
-  min_urgency: soon
+  min_urgency: routine  # mild croup (no stridor at rest) is home care with return precautions
   max_urgency: urgent
   must_consider: [[croup, laryngotracheobronchitis]]
   must_call: [[calc_westley_croup_score]]

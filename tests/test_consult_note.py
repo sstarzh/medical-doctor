@@ -1,3 +1,4 @@
+import pytest
 """Structured consult output and citation verification."""
 
 import json
@@ -35,9 +36,9 @@ def test_red_flag_screen_is_an_urgency_floor():
 def test_missing_or_invalid_block_falls_back_to_markdown():
     _, s = consult_note.structure("## Urgency\n**EMERGENCY** call 911", None)
     assert s["source"] == "markdown_fallback" and s["urgency"] == "emergency" and "parse_error" in s
-    bad = NOTE.replace('"urgent"', '"whenever"', 1)
+    bad = NOTE.replace('"urgent"', '"whenever"', 1)  # unusable urgency: recovered from the ## Urgency line
     _, s = consult_note.structure(bad, None)
-    assert s["source"] == "markdown_fallback" and "urgency" in s["parse_error"] and s["urgency"] == "urgent"
+    assert s["source"] == "model" and s["urgency"] == "urgent" and s["differential"][1]["cant_miss"] is True
 
 
 async def fake_pubmed(pmids):
@@ -81,3 +82,60 @@ async def test_run_consult_returns_structured_and_citation_check(monkeypatch):
 
 def test_charter_asks_for_the_summary_block():
     assert "```json" in physician.CHARTER and "citations" in physician.CHARTER
+
+
+def test_live_model_near_misses_are_repaired():
+    """Shapes seen in the first live eval run: text after the block, trailing commas, synonyms."""
+    import json as _json
+
+    block = _json.dumps({
+        "urgency": "URGENT (same day)", "patient_is_user": "yes",
+        "differential": [{"diagnosis": "Pulmonary embolism", "likelihood": "high", "probability_pct": "45%", "cant_miss": "true"},
+                         "Pneumonia", {"diagnosis": "", "likelihood": "low"}],
+        "management": "Start anticoagulation", "citations": [{"label": "ESC PE guideline", "pmid": "PMID: 31504429"}],
+    })[:-1] + ",}"
+    note = "## Urgency\nURGENT\n\nbody\n\n```json\n" + block + "\n```\n\nThis is decision support, not a diagnosis."
+    md, s = consult_note.structure(note, None)
+    assert s["source"] == "model" and s["urgency"] == "urgent" and s["patient_is_user"] is True
+    assert s["differential"][0] == {"diagnosis": "Pulmonary embolism", "likelihood": "likely", "probability_pct": 45.0, "cant_miss": True}
+    assert s["differential"][1]["diagnosis"] == "Pneumonia" and len(s["differential"]) == 2 and s["repaired"]
+    assert s["management"] == ["Start anticoagulation"] and s["citations"][0]["pmid"] == "31504429"
+    assert "```" not in md and md.endswith("This is decision support, not a diagnosis.")
+
+
+def test_urgency_text_uses_the_first_urgency_word():
+    assert consult_note._urgency("ROUTINE - see your GP; go to the emergency department if worse") == "routine"
+    assert consult_note._urgency("EMERGENCY: call 911") == "emergency"
+
+
+@pytest.mark.parametrize("value", [["high"], {"level": "high"}, 3, None, "unknown"])
+def test_odd_urgency_shapes_never_crash(value):
+    import json as _json
+
+    note = "## Urgency\nURGENT\n\n```json\n" + _json.dumps({"urgency": value, "differential": ["Pneumonia"]}) + "\n```"
+    _, s = consult_note.structure(note, None)
+    assert s["urgency"] == "urgent" and s["source"] == "model"
+
+
+def test_lone_strings_are_one_item_and_long_lists_fit_the_schema():
+    import json as _json
+
+    raw = {"urgency": "routine", "differential": "Viral URI", "citations": "PMID: 31504429",
+           "return_precautions": [f"sign {i}" for i in range(25)], "drafts": [f"d{i}" for i in range(30)],
+           "missing_information": [f"q{i}" for i in range(35)], "patient_facts": [{"section": "conditions", "data": {}}] * 45}
+    _, s = consult_note.structure("```json\n" + _json.dumps(raw) + "\n```", None)
+    assert s["source"] == "model" and s["differential"] == [{"diagnosis": "Viral URI", "likelihood": "possible", "cant_miss": False}]
+    assert len(s["citations"]) == 1 and s["citations"][0]["pmid"] == "31504429"
+    assert (len(s["return_precautions"]), len(s["drafts"]), len(s["missing_information"]), len(s["patient_facts"])) == (20, 20, 30, 40)
+
+
+async def test_citation_labelled_by_acronym_still_verifies_when_title_fits_the_note():
+    async def pubmed(pmids):
+        return {"40679934": {"title": "Diagnosis and Management of Community-acquired Pneumonia: An Official American Thoracic Society Guideline."},
+                "11111111": {"title": "Zebrafish fin regeneration under hypoxia"}}
+
+    md = ("Community-acquired pneumonia in a healthy adult: amoxicillin per ATS/IDSA 2019 (PMID 40679934). "
+          "Also see PMID 11111111 (ATS 2007).")
+    r = await citations.verify(md, {}, summaries=pubmed)
+    by = {x["pmid"]: x["status"] for x in r["pmids"]}
+    assert by == {"40679934": "verified", "11111111": "mismatch"}
