@@ -127,3 +127,15 @@ def test_lone_strings_are_one_item_and_long_lists_fit_the_schema():
     assert s["source"] == "model" and s["differential"] == [{"diagnosis": "Viral URI", "likelihood": "possible", "cant_miss": False}]
     assert len(s["citations"]) == 1 and s["citations"][0]["pmid"] == "31504429"
     assert (len(s["return_precautions"]), len(s["drafts"]), len(s["missing_information"]), len(s["patient_facts"])) == (20, 20, 30, 40)
+
+
+async def test_citation_labelled_by_acronym_still_verifies_when_title_fits_the_note():
+    async def pubmed(pmids):
+        return {"40679934": {"title": "Diagnosis and Management of Community-acquired Pneumonia: An Official American Thoracic Society Guideline."},
+                "11111111": {"title": "Zebrafish fin regeneration under hypoxia"}}
+
+    md = ("Community-acquired pneumonia in a healthy adult: amoxicillin per ATS/IDSA 2019 (PMID 40679934). "
+          "Also see PMID 11111111 (ATS 2007).")
+    r = await citations.verify(md, {}, summaries=pubmed)
+    by = {x["pmid"]: x["status"] for x in r["pmids"]}
+    assert by == {"40679934": "verified", "11111111": "mismatch"}

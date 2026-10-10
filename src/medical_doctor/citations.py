@@ -54,6 +54,7 @@ async def verify(markdown: str, structured: dict[str, Any], summaries=None) -> d
         looked_up = await summaries(pmids) if pmids else {}
     except Exception as exc:  # network/upstream failure is "unchecked", never a pass
         looked_up, error = None, f"{type(exc).__name__}: {exc}"
+    note_words = _words(markdown)
     for pmid in pmids:
         if looked_up is None:
             results.append({"pmid": pmid, "status": "unchecked", "reason": error})
@@ -63,8 +64,11 @@ async def verify(markdown: str, structured: dict[str, Any], summaries=None) -> d
             results.append({"pmid": pmid, "status": "not_found"})
             continue
         claim = _words(_context_for(pmid, markdown, citations)) - {pmid}
-        overlap = claim & _words(art["title"])
-        status = "verified" if overlap or not claim else "mismatch"
+        title = _words(art["title"])
+        # Labels are often just "ATS/IDSA 2019" or "Smith 2012", sharing no words with the real title, so a
+        # title that clearly fits the note's topic (2+ shared content words) also counts. An invented or
+        # wrong PMID points to an unrelated article and still fails both tests.
+        status = "verified" if (claim & title or not claim or len(note_words & title) >= 2) else "mismatch"
         results.append({"pmid": pmid, "status": status, "title": art["title"], "pubdate": art.get("pubdate"),
                         "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/"})
     urls = list(dict.fromkeys([c["url"] for c in citations if c.get("url")] + re.findall(r"https?://[^\s)>\]]+", markdown)))
