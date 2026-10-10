@@ -1,6 +1,10 @@
 ---
 name: neurology
 description: Neurology consults — stroke/TIA recognition and secondary prevention, headache red flags (SNOOP4), seizures and status epilepticus, dizziness/vertigo (HINTS), weakness localization, altered mental status, and dementia evaluation. Use for neurologic symptoms.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Neurology

@@ -1,6 +1,10 @@
 ---
 name: pediatrics
 description: Core pediatric practice for infants, children and adolescents — pediatric history and exam by age, age-specific vital signs, weight-based dosing safety, drugs to never give children, talking with parents, and when to use the other pediatric skills. Use whenever the patient is under 18.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Pediatrics (Core)

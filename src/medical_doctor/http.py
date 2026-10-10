@@ -10,6 +10,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import Settings
+from .observability import RequestContext
 from .server import build_server
 
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -60,12 +61,13 @@ def create_app(
         app = IpRateLimit(app, store, trust_vercel=settings.on_vercel)
     # Browser-based MCP clients (MCP Inspector, web IDEs) need CORS; bearer tokens, not cookies,
     # carry auth, so a permissive origin list does not expose credentials.
+    app = RequestContext(app)
     return CORSMiddleware(
         app,
         allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "Accept", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-ID"],
-        expose_headers=["Mcp-Session-Id", "WWW-Authenticate"],
+        allow_headers=["Authorization", "Content-Type", "X-Request-Id", "Accept", "Mcp-Session-Id", "Mcp-Protocol-Version", "Last-Event-ID"],
+        expose_headers=["Mcp-Session-Id", "WWW-Authenticate", "X-Request-Id"],
         max_age=600,
     )
 

@@ -1,6 +1,10 @@
 ---
 name: obstetrics-gynecology
 description: Obstetric and gynecologic consults — pregnancy test-first rule, early pregnancy bleeding/ectopic, hypertensive disorders of pregnancy, medication safety in pregnancy and lactation, contraception (CDC MEC), abnormal uterine bleeding, and cervical cancer screening. Use whenever the patient is or could be pregnant, postpartum, or has a gynecologic issue.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Obstetrics & Gynecology

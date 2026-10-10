@@ -1,6 +1,10 @@
 ---
 name: cardiology
 description: Cardiovascular consults — chest pain risk stratification (HEART), ACS, atrial fibrillation (CHA2DS2-VASc, HAS-BLED, rate vs rhythm), heart failure (GDMT four pillars), hypertension, lipids and prevention, syncope, and ECG/QTc. Use for any cardiac symptom, finding, or risk question.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Cardiology

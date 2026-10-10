@@ -130,7 +130,7 @@ def test_clean_dsn_strips_provider_params():
 
 @needs_pg
 async def test_full_oauth_flow_on_postgres():
-    from test_auth import INIT, call, client_for, get_tokens
+    from tests.test_auth import INIT, call, client_for, get_tokens
 
     st = fresh_pg()
     try:

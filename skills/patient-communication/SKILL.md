@@ -1,6 +1,10 @@
 ---
 name: patient-communication
 description: Explaining medical information to patients and families — plain language, teach-back, risk communication with absolute numbers, breaking bad news (SPIKES), shared decision making, cultural humility, and safety-netting. Use whenever the audience is a patient or caregiver.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Patient Communication

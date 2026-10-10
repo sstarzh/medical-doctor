@@ -16,6 +16,12 @@ from medical_doctor.safety import screen
         ("8 weeks pregnant with bleeding and severe pelvic pain", "pregnancy"),
         ("oxygen saturation 84% and gasping", "airway_breathing"),
         ("back pain with saddle numbness", "cauda_equina"),
+        # misses found by the evals/ vignettes
+        ("LMP 7 weeks ago, with left lower quadrant pain and spotting", "pregnancy"),
+        ("missed her period and now has pelvic pain and feels lightheaded", "pregnancy"),
+        ("84-year-old with 2 days of new confusion and agitation", "altered_mental_status"),
+        ("toddler with diarrhea, sunken eyes, very sleepy and hard to wake", "hard_to_wake"),
+        ("fell off the monkey bars, brief loss of consciousness, then vomited", "head_injury"),
     ],
 )
 def test_emergencies_detected(text, flag):
@@ -148,3 +154,10 @@ def test_screen_is_bounded_on_huge_input():
     start = time.time()
     screen("chest discomfort " * 200_000)
     assert time.time() - start < 2
+
+
+def test_eval_gap_rules_have_sane_negation_and_tiers():
+    assert screen("he is not hard to wake, playing normally").urgency == "routine"
+    assert screen("her period is late but no pain or bleeding").urgency == "routine"
+    r = screen("periumbilical pain moving to the right lower quadrant with fever")
+    assert r.urgency == "urgent" and "acute_abdomen" in {h.id for h in r.hits}

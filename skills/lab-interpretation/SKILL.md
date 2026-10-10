@@ -1,6 +1,10 @@
 ---
 name: lab-interpretation
 description: Systematic interpretation of laboratory results — CBC, metabolic panel, acid-base (stepwise with anion gap and compensation), liver tests pattern, thyroid, iron studies, urinalysis, cardiac biomarkers, and critical values. Use whenever lab values are supplied.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Laboratory Interpretation

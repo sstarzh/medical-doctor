@@ -1,6 +1,10 @@
 ---
 name: pharmacotherapy
 description: Safe prescribing and medication review — verify every dose against the FDA label, renal/hepatic adjustment, interactions (CYP, QT, serotonergic, additive CNS/bleeding), pregnancy/lactation, Beers criteria for older adults, and deprescribing. Use whenever a drug is mentioned, recommended, or a medication list is provided.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Pharmacotherapy

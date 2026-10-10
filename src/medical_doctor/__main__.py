@@ -3,18 +3,43 @@
     medical-doctor-mcp                         # stdio (local clients)
     medical-doctor-mcp --transport http        # streamable HTTP on :8000/mcp (remote clients)
     medical-doctor-mcp gen-key [label]         # generate an API key
+    medical-doctor-mcp check-freshness         # skill/guideline review status (exit 1 if overdue)
+    medical-doctor-mcp eval [--consult]        # clinical vignette evals (see evals/cases.yaml)
 """
 
 from __future__ import annotations
 
 import argparse
-import logging
 import os
 import secrets
 import sys
 
 
+def check_freshness() -> int:
+    import json
+
+    from .skills import freshness_report
+
+    report = freshness_report()
+    if "--json" in sys.argv:
+        print(json.dumps(report, indent=2))
+    else:
+        for r in report["skills"]:
+            old = ", ".join(f"{g['guideline']} {g['year']}" for g in r["older_guidelines"])
+            print(f"{r['status']:<15} {r['last_reviewed'] or '-':<11} clinical_review={r['clinical_review']:<8} {r['skill']}"
+                  + (f"  [older editions cited: {old}]" if old else ""))
+        print(f"\n{len(report['review_due'])} overdue, {len(report['pending_clinical_review'])} awaiting clinician sign-off, "
+              f"{report['older_guideline_citations']} citations of guideline editions over 5 years old")
+    return 1 if report["review_due"] else 0
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "eval":
+        from .evals import main as run_evals
+
+        sys.exit(run_evals(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "check-freshness":
+        sys.exit(check_freshness())
     if len(sys.argv) > 1 and sys.argv[1] == "gen-data-key":
         from .records.crypto import generate_key
 
@@ -36,7 +61,9 @@ def main() -> None:
                         help="no server-side sessions (for load-balanced/serverless deployments)")
     parser.add_argument("--json-response", action="store_true", help="plain JSON responses instead of SSE streams")
     args = parser.parse_args()
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from .observability import configure
+
+    configure()
 
     if args.transport == "stdio":
         from .config import load_settings

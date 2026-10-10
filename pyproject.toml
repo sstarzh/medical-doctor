@@ -1,6 +1,6 @@
 [project]
 name = "medical-doctor-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "Attending-physician-grade clinical decision support exposed as an MCP server, with portable Agent Skills (Claude Code / OpenClaw compatible)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,11 +15,13 @@ dependencies = [
   "starlette>=0.40",
   "psycopg[binary]>=3.2",
   "psycopg-pool>=3.2",
-  "openai>=3.0",  # OpenAI and Meta Llama (OpenAI-compatible) consult providers
+  "openai>=3.0",  # OpenAI, Meta (Muse Spark) and Llama consult providers (OpenAI-compatible)
+  "opentelemetry-api>=1.30",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+otel = ["opentelemetry-sdk>=1.30", "opentelemetry-exporter-otlp-proto-http>=1.30"]
 
 [project.scripts]
 medical-doctor-mcp = "medical_doctor.__main__:main"
@@ -33,6 +35,7 @@ packages = ["src/medical_doctor"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "medical_doctor/skills"
+"evals/cases.yaml" = "medical_doctor/eval_cases/cases.yaml"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

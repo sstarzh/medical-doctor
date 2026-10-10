@@ -1,6 +1,10 @@
 ---
 name: clinical-reasoning
 description: Attending-level diagnostic reasoning — problem representation, illness scripts, Bayesian pretest/post-test probability, ranked differentials with can't-miss diagnoses, and cognitive-bias checks. Use for any diagnostic question or symptom workup.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Clinical Reasoning (Attending Standard)

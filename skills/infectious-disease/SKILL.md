@@ -1,6 +1,10 @@
 ---
 name: infectious-disease
 description: Infectious disease consults — sepsis recognition, empiric antibiotic selection by syndrome with stewardship, CAP (CURB-65), UTI, skin/soft tissue, pharyngitis (Centor), meningitis, STIs, travel medicine, and immunocompromised hosts. Use whenever infection is suspected or antimicrobials are considered.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Infectious Disease

@@ -1,6 +1,10 @@
 ---
 name: well-child-development
 description: Preventive pediatrics and development — Bright Futures well-child care, growth and BMI-for-age, developmental milestones and red flags, autism and ADHD, immunization questions and hesitancy, screening schedule, nutrition, sleep, screen time, injury prevention, and adolescent health (HEADSSS, confidentiality, mental health, sexual health). Use for routine child health, growth, development, behavior, or adolescent questions.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Well-Child Care & Development

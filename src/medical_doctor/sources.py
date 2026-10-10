@@ -295,6 +295,25 @@ async def pubmed_search(query: str, max_results: int = 8, reviews_and_trials_onl
     return {"query": term, "count": len(articles), "articles": articles}
 
 
+async def pubmed_summaries(pmids: list[str]) -> dict[str, dict[str, Any]]:
+    """Look up PMIDs (esummary). Missing or withdrawn IDs are absent from the result."""
+    ids = [p for p in dict.fromkeys(pmids) if p.isdigit()][:50]
+    if not ids:
+        return {}
+    params: dict[str, Any] = {"db": "pubmed", "retmode": "json", "id": ",".join(ids)}
+    if key := os.environ.get("NCBI_API_KEY"):
+        params["api_key"] = key
+    async with _client() as c:
+        r = await _get(c, f"{EUTILS}/esummary.fcgi", params=params)
+        r.raise_for_status()
+        summ = r.json().get("result", {})
+    return {
+        pmid: {"title": a.get("title"), "pubdate": a.get("pubdate"), "journal": a.get("fulljournalname") or a.get("source")}
+        for pmid in ids
+        if isinstance(a := summ.get(pmid), dict) and not a.get("error") and a.get("title")
+    }
+
+
 async def pubmed_abstract(pmid: str) -> dict[str, Any]:
     if not pmid.isdigit():
         raise ValueError("pmid must be numeric")

@@ -1,6 +1,10 @@
 ---
 name: pediatric-infectious-disease
 description: Common and dangerous pediatric infections — fever without a source by age, acute otitis media, strep pharyngitis, sinusitis, pneumonia, urinary tract infection, skin infections, Kawasaki disease and MIS-C, orbital cellulitis, meningitis, measles, pertussis, and antibiotic dosing/stewardship in children. Use whenever a child may have an infection.
+metadata:
+  last_reviewed: "2026-10-09"
+  review_interval_days: "365"
+  clinical_review: "pending"
 ---
 
 # Pediatric Infectious Disease

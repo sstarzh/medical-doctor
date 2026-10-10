@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -19,11 +20,12 @@ from mcp_types import TextContent, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from . import __version__, calculators, pediatric, physician, safety, sources
+from . import __version__, calculators, consult_note, pediatric, physician, safety, sources
 from .config import Settings
 from .identity import AuthRequired, current_principal
 from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
-from .skills import load_skills
+from .observability import ToolTimingMiddleware, consult_span, record_consult
+from .skills import freshness as skill_freshness, load_skills
 
 log = logging.getLogger("medical_doctor")
 audit = logging.getLogger("medical_doctor.audit")
@@ -46,7 +48,8 @@ Workflow for any health question:
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
 4. `search` / `fetch` find and read skills, calculators and PubMed articles.
 5. Personal doctor: the user can keep an encrypted chart for themselves and family members
-   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`). Pass `patient_id` to `consult`
+   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`, or `patient_import_fhir` for records
+   exported from a hospital or health app). Pass `patient_id` to `consult`
    so the attending sees the history. Use the `personal_doctor_visit` / `patient_intake` prompts.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
    presented as calls to action — never as prescriptions or orders.
@@ -203,6 +206,7 @@ def build_server(
         website_url=settings.public_url or None,
         **kwargs,
     )
+    mcp.middleware.append(ToolTimingMiddleware())
     limiter = RateLimiter(settings.consult_limit_per_hour, store)
     _register_tools(mcp, limiter, settings, records)
     register_record_tools(mcp, records)
@@ -270,7 +274,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
         personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
-        their notes, listing disagreements. Takes 30 s to a few minutes."""
+        their notes, listing disagreements. Takes 30 s to a few minutes.
+        Result: `note` (Markdown), `structured` (urgency — never below the red-flag screen —, differential with
+        can't-miss flags, evaluation, management, drafts, missing information, citations) and `citation_check`
+        (each PMID looked up in PubMed: verified / mismatch / not_found / unchecked)."""
         try:
             who = current_principal(records.local_mode or settings.auth_mode == "none").owner
         except AuthRequired:
@@ -303,19 +310,24 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             except Exception:  # progress is best-effort (client may not send a progress token)
                 pass
 
-        result = await physician.run_consult(
-            case=case,
-            question=question,
-            audience=audience,
-            triage=triage,
-            tools=await physician_tools(),
-            execute_tool=execute_for_physician,
-            settings=settings,
-            chart_summary=chart_summary,
-            progress=progress,
-            engine=physician.make_engine(settings, chosen),
-            second_opinion=second_opinion,
-        )
+        engine = physician.make_engine(settings, chosen)
+        started = time.monotonic()
+        with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(patient_id),
+                                                             "medical_doctor.second_opinion": second_opinion}) as span:
+            result = await physician.run_consult(
+                case=case,
+                question=question,
+                audience=audience,
+                triage=triage,
+                tools=await physician_tools(),
+                execute_tool=execute_for_physician,
+                settings=settings,
+                chart_summary=chart_summary,
+                progress=progress,
+                engine=engine,
+                second_opinion=second_opinion,
+            )
+            record_consult(span, result, time.monotonic() - started)
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
         return result
@@ -390,6 +402,17 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         Returns PMIDs, titles, journals, dates and URLs. Use pubmed_abstract to read one."""
         return await sources.pubmed_search(query, max_results, high_quality_only, since_year)
 
+    @mcp.tool(annotations=READ_ONLY_WEB, title="Verify citations")
+    async def verify_citations(text: Annotated[str, Field(max_length=MAX_CASE_CHARS)]) -> dict[str, Any]:
+        """Check the references in a clinical text (e.g. a consult note you or another model wrote): every
+        PMID is looked up in PubMed and marked verified / mismatch (real article on a different topic —
+        likely a wrong or invented ID) / not_found / unchecked; links are marked by whether they point to a
+        recognised guideline or journal publisher. Use before relying on a model-written reference."""
+        from . import citations
+
+        markdown, structured = consult_note.structure(text)
+        return await citations.verify(markdown, structured)
+
     @mcp.tool(annotations=READ_ONLY_WEB)
     async def pubmed_abstract(pmid: str) -> dict[str, Any]:
         """Fetch the abstract of a PubMed article by PMID."""
@@ -409,9 +432,15 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
     # --- Skills ----------------------------------------------------------
 
     @mcp.tool(annotations=READ_ONLY)
-    def list_skills() -> list[dict[str, str]]:
-        """List the clinical skills (specialty playbooks) available on this server."""
-        return [{"name": s.name, "description": s.description} for s in load_skills().values()]
+    def list_skills() -> list[dict[str, Any]]:
+        """List the clinical skills (specialty playbooks) on this server, with review freshness:
+        status current / review_due, last_reviewed date, clinical_review (pending|approved), and cited
+        guideline editions older than 5 years that should be checked for an update."""
+        out = []
+        for s in load_skills().values():
+            f = skill_freshness(s)
+            out.append({"name": s.name, "description": s.description, "freshness": {k: v for k, v in f.items() if k != "skill"}})
+        return out
 
     @mcp.tool(annotations=READ_ONLY)
     def get_skill(name: str) -> str:

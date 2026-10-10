@@ -92,9 +92,10 @@ class LazyLifespanApp:
 def create_serverless_app(settings: Any = None) -> ASGIApp:
     from .config import load_settings
     from .http import create_app
+    from .observability import configure
 
     settings = settings or load_settings()
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure()
     # Database pools are created ONCE per process and shared by every per-event-loop app rebuild;
     # psycopg's sync pool is not bound to an event loop. (Re-creating them per loop leaked
     # Postgres connections and pool threads on Vercel.)

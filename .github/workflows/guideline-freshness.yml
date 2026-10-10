@@ -1,0 +1,38 @@
+name: Guideline freshness
+on:
+  schedule:
+    - cron: "17 9 1 * *"  # monthly
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e .
+      - name: Check skill review dates and cited guideline editions
+        id: check
+        run: |
+          set +e
+          medical-doctor-mcp check-freshness > report.txt
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          { echo '```'; cat report.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Open an issue when skills are overdue for review
+        if: steps.check.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Clinical skills overdue for guideline review ($(date +%Y-%m))"
+          if gh issue list --state open --search "$title in:title" --json number --jq '.[0].number' | grep -q .; then
+            echo "Issue already open"; exit 0
+          fi
+          { echo "The monthly freshness check found skills past their review interval."; echo; echo '```'; cat report.txt; echo '```';
+            echo; echo "Update each overdue skill against the current guideline editions, then bump \`metadata.last_reviewed\`."; } > body.md
+          gh issue create --title "$title" --body-file body.md

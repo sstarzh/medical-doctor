@@ -12,6 +12,7 @@ import os
 from typing import Any, Literal
 
 from .config import Settings, is_training_model
+from .consult_note import OUTPUT_CONTRACT, split_note, structure
 from .llm.base import ConsultOutcome, ConsultRun, Engine, Progress, ToolExecutor
 from .skills import load_skills, select_skills, skill_library_text
 
@@ -97,7 +98,8 @@ steps and the exact signs that mean "go to the emergency department now".)
 Bulleted citations actually retrieved or well established; flag anything unverified.
 
 End with: "This is decision support, not a diagnosis. Confirm with a licensed clinician who can examine the patient."
-"""
+
+""" + OUTPUT_CONTRACT
 
 SYNTHESIS_PROMPT = """\
 You chair a case conference. Several attending physicians (different AI models) independently wrote the \
@@ -230,7 +232,8 @@ async def run_consult(
             good = [o for o in outcomes if o.ok]
             if len(panel) > 1:
                 result["panel"] = [
-                    {"provider": o.provider, "model": o.model, "ok": o.ok, "note": o.note, "error": o.error} for o in outcomes
+                    {"provider": o.provider, "model": o.model, "ok": o.ok, "note": split_note(o.note)[0], "error": o.error}
+                    for o in outcomes
                 ]
                 if len(good) > 1:
                     if progress:
@@ -246,6 +249,8 @@ async def run_consult(
                         result["synthesis_error"] = f"{type(exc).__name__}: {exc}"
                 elif not primary.ok and good:
                     result.update({"ok": True, "note": good[0].note, "provider": good[0].provider, "model": good[0].model})
+            if result.get("ok") and result.get("note"):
+                await _finish_note(result, triage, settings, progress)
             return result
     except TimeoutError:
         return {
@@ -254,3 +259,19 @@ async def run_consult(
             "model": engine.model,
             "error": f"Consult exceeded the {settings.consult_timeout:.0f} s time budget. Try effort=medium, a narrower question, or the individual tools.",
         }
+
+
+async def _finish_note(result: dict[str, Any], triage: dict[str, Any], settings: Settings, progress: Progress | None) -> None:
+    """Split out the machine-readable summary and check the note's citations against PubMed."""
+    result["note"], result["structured"] = structure(result["note"], triage)
+    if not settings.verify_citations:
+        return
+    from .citations import verify
+
+    if progress:
+        await progress(100, "Verifying citations")
+    try:
+        async with asyncio.timeout(15):
+            result["citation_check"] = await verify(result["note"], result["structured"])
+    except TimeoutError:
+        result["citation_check"] = {"error": "citation check timed out; citations are unverified"}
