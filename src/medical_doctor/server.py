@@ -29,10 +29,12 @@ from .records_tools import (
     AutoChart,
     Records,
     chart_suggestions,
+    reported_case,
     register_chart_memory_tools,
     register_order_tools,
     register_record_tools,
 )
+from .llm.base import normalize_images
 from .observability import ToolTimingMiddleware, consult_span, record_consult
 from .skills import freshness as skill_freshness, load_skills
 
@@ -45,7 +47,10 @@ DISCLAIMER = (
 )
 
 INSTRUCTIONS = f"""\
-Medical Doctor MCP: attending-physician-grade clinical decision support.
+Medical Doctor MCP is the user's personal doctor. Use it automatically, without being asked, for ANY
+health-related message: symptoms, illness or injury, medicines, side effects, test or lab results, diet,
+exercise or sleep as they affect health, pregnancy, children's health, mental health, or the user's own
+medical history. Start with `my_chart`, and answer from this server's tools rather than general knowledge.
 
 Workflow for any health question:
 1. Call `red_flag_screen` on the user's words first. If urgency is "emergency", tell the user to get
@@ -64,6 +69,9 @@ Workflow for any health question:
      `chart_record` (many facts per call; repeats update existing entries) and add a short `note` in their
      words. Save what they state, never your hypotheses.
    - `consult` loads the chart and saves the visit automatically (see its `chart` result).
+   - When they ask for a second opinion, or doubt a diagnosis or treatment (from this service or their own
+     doctor), call `second_opinion` (with what they were told, if it came from elsewhere). If a consult's
+     `self_check.suggest_second_opinion` is true, offer one.
    - Family members get their own profile (`patient_create` with relationship); pass its `patient_id`.
    - `patient_import_fhir` / `ehr_connect` bring in hospital and portal records.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
@@ -77,7 +85,7 @@ READ_ONLY_WEB = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempo
 
 # Tools that the inner physician model must not call: recursion, meta tools, and anything that
 # reads or writes the patient record (the consult gets the chart summary explicitly instead).
-_NOT_FOR_PHYSICIAN = {"consult", "list_skills", "get_skill", "search", "fetch", "whoami", "care_plan_update"} | RECORD_TOOLS
+_NOT_FOR_PHYSICIAN = {"consult", "second_opinion", "list_skills", "get_skill", "search", "fetch", "whoami", "care_plan_update"} | RECORD_TOOLS
 MAX_TOOL_OUTPUT_CHARS = 12_000
 MAX_CASE_CHARS = 50_000
 
@@ -272,7 +280,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
 
     @mcp.tool(annotations=READ_ONLY, title="Emergency red-flag screen")
     async def red_flag_screen(text: Annotated[str, Field(max_length=MAX_CASE_CHARS)]) -> dict[str, Any]:
-        """Deterministic emergency red-flag screen of free-text symptoms (stroke, ACS, cardiac arrest, sepsis,
+        """Use on ANY symptom the user mentions, unprompted. Deterministic emergency red-flag screen (stroke, ACS, cardiac arrest, sepsis,
         anaphylaxis, overdose, suicide risk, obstetric and pediatric emergencies, etc.). Run this FIRST on any
         patient narrative. Returns urgency (emergency|urgent|routine), matched red flags, and the immediate action."""
         return (await anyio.to_thread.run_sync(safety.screen, text)).to_dict()
@@ -292,8 +300,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         provider: Literal["anthropic", "openai", "meta", "llama"] | None = None,
         second_opinion: bool = False,
         depth: Literal["quick", "standard", "thorough"] | None = None,
+        images: Annotated[list[dict[str, str]] | None, Field(max_length=4)] = None,
     ) -> dict[str, Any]:
-        """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
+        """Use for any health question, symptom, or medical decision, even if the user does not mention this tool. Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
         pediatrics, incl. neonates and adolescents). Give the whole case: age (days/months for infants), weight
         for children, sex, pregnancy status, chief complaint, history of present illness, past history,
         medications, allergies, vitals, exam, labs/imaging.
@@ -302,7 +311,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child.
         The patient's chart is loaded automatically (their own, or the profile given by patient_id; a chart is
         opened on their first visit), and after the consult the facts they stated and a visit note are saved to
-        it (see `chart` in the result). Pass patient_id when the case is about a family member. provider: which model family runs the consult (anthropic|openai|meta|llama; default
+        it (see `chart` in the result). Pass patient_id when the case is about a family member.
+        images: up to 4 photos (rash, wound, eye, a lab report or medication label) as {"url": "https://..."} or
+        {"data": <base64>, "media_type": "image/jpeg"}. If you can see the patient's photo but cannot pass its
+        bytes, describe it precisely in `case` instead (location, size, color, borders, texture, spread). provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
         their notes, listing disagreements. depth: 'quick' (fastest; fewer tool rounds, no web search — good for
         triage and simple questions), 'standard' (default), or 'thorough' (most verification; slowest). Every depth
@@ -319,6 +331,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         # Audit who/when/urgency only — never the clinical text (PHI).
         audit.info("consult owner=%s client=%s urgency=%s chart=%s", who, user.get("client_id"), triage["urgency"], bool(patient_id))
         chosen = provider or settings.llm_provider
+        try:
+            photos = normalize_images(images)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
         # The chart this conversation is about: given, the account's only/self profile, or (first visit)
         # a new 'self' profile. Retrieval and saving happen on the server, not at the client's discretion.
         chart = await charting.resolve(patient_id, user.get("name"))
@@ -335,15 +351,14 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 "disclaimer": DISCLAIMER,
             }
 
-        async def load_summary() -> str | None:
-            if not chart.patient_id:
-                return None
-            from .records.service import summarize
-
-            return summarize(await records.chart(chart.patient_id, purpose="consult"))
+        async def load_chart() -> dict[str, Any] | None:
+            return await records.chart(chart.patient_id, purpose="consult") if chart.patient_id else None
 
         # Independent setup steps run concurrently (each is a database or registry round trip).
-        chart_summary, _, tools = await asyncio.gather(load_summary(), limiter.check(who), physician_tools())
+        chart_data, _, tools = await asyncio.gather(load_chart(), limiter.check(who), physician_tools())
+        from .records.service import summarize
+
+        chart_summary = summarize(chart_data) if chart_data else None
 
         async def progress(step: int, message: str) -> None:
             try:
@@ -351,7 +366,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             except Exception:  # progress is best-effort (client may not send a progress token)
                 pass
 
-        engine = physician.make_engine(settings, chosen, depth)
+        engine = physician.make_engine(settings, chosen, depth, triage["urgency"])
         started = time.monotonic()
         with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(chart.patient_id),
                                                              "medical_doctor.second_opinion": second_opinion}) as span:
@@ -368,11 +383,88 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 engine=engine,
                 second_opinion=second_opinion,
                 depth=depth,
+                chart=chart_data,
+                images=photos,
             )
             result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)
         if result.get("ok"):
-            await charting.save_visit(chart, case, question, result.get("structured") or {})
+            photo_note = f"\n\n[{len(photos)} photo(s) reviewed; images are not stored]" if photos else ""
+            await charting.save_visit(chart, case + photo_note, question, result.get("structured") or {})
+        result["chart"] = chart.public()
+        result["red_flag_screen"] = triage
+        result["disclaimer"] = DISCLAIMER
+        return result
+
+    @mcp.tool(
+        annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+        title="Second opinion",
+    )
+    async def second_opinion(
+        ctx: Context,
+        prior_advice: Annotated[str | None, Field(max_length=MAX_CASE_CHARS)] = None,
+        case: Annotated[str | None, Field(max_length=MAX_CASE_CHARS)] = None,
+        question: Annotated[str | None, Field(max_length=5_000)] = None,
+        patient_id: Annotated[str | None, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")] = None,
+        audience: Literal["clinician", "patient", "caregiver"] = "patient",
+    ) -> dict[str, Any]:
+        """Use, unprompted, whenever the user wants a second opinion or doubts a diagnosis, test or
+        treatment, whether it came from this service or from their own doctor. A different, more capable model
+        first works the case up independently (without seeing the earlier advice, so it is not anchored by it),
+        then compares: verdict (agree / agree with changes / disagree), what was missed, safety concerns, and
+        next steps. prior_advice: what they were told (paste it); if omitted, the most recent consult in their
+        chart is reviewed. case: the clinical details (defaults to that consult's details). The result is saved
+        to the chart. Takes about as long as a consult."""
+        try:
+            who = current_principal(records.local_mode or settings.auth_mode == "none").owner
+        except AuthRequired:
+            who = "anonymous"
+        user = current_user()
+        chart = await charting.resolve(patient_id, user.get("name"))
+        chart_data = await records.chart(chart.patient_id, purpose="second_opinion") if chart.patient_id else None
+        if not prior_advice and chart_data:
+            visits = sorted((n for n in chart_data.get("notes", []) if str(n.get("title", "")).startswith("Consult:")),
+                            key=lambda n: n.get("date") or "")
+            if visits:
+                prior_advice = f"{visits[-1]['title']} ({visits[-1].get('date', '')})\n{visits[-1]['text']}"
+                # The blinded work-up gets only what the patient reported, never the earlier conclusions:
+                # neither from the case text nor from the chart summary's recent visits.
+                case = case or reported_case(visits[-1]["text"])
+                reviewed = visits[-1]
+                chart_data = {**chart_data, "notes": [n for n in chart_data.get("notes", []) if n is not reviewed]}
+        if not prior_advice:
+            raise ToolError("Nothing to review yet: pass prior_advice (what the patient was told) and the case details.")
+        if not case:
+            raise ToolError("Pass `case`: the patient's symptoms and history, separately from prior_advice, so the "
+                            "independent review is not anchored on the earlier conclusions.")
+        reviewer = physician.second_opinion_engine(settings)
+        if not physician.credentials_for(reviewer.provider):
+            raise ToolError(f"No {reviewer.provider} credentials on the server for the second-opinion reviewer.")
+        triage = (await anyio.to_thread.run_sync(safety.screen, " ".join(filter(None, [case, question])))).to_dict()
+        audit.info("second_opinion owner=%s client=%s urgency=%s", who, user.get("client_id"), triage["urgency"])
+        from .records.service import summarize
+
+        _, tools = await asyncio.gather(limiter.check(who), physician_tools())
+
+        async def progress(step: int, message: str) -> None:
+            try:
+                await ctx.report_progress(step, None, message)
+            except Exception:
+                pass
+
+        started = time.monotonic()
+        with consult_span(reviewer.provider, reviewer.model, **{"medical_doctor.second_opinion": True}) as span:
+            result = await physician.run_second_opinion(
+                case=case, prior_advice=prior_advice, question=question, audience=audience, triage=triage,
+                tools=tools, execute_tool=execute_for_physician, settings=settings,
+                chart_summary=summarize(chart_data) if chart_data else None, chart=chart_data,
+                progress=progress, engine=reviewer,
+            )
+            record_consult(span, result, time.monotonic() - started)
+        if result.get("ok"):
+            verdict = (result.get("verdict") or "opinion").replace("_", " ")
+            await charting.save_note(chart, result.get("structured") or {},
+                                     {"title": f"Second opinion: {verdict}", "text": result["opinion"][:20000]})
         result["chart"] = chart.public()
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER

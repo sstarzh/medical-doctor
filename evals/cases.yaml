@@ -256,3 +256,111 @@
   min_urgency: routine
   max_urgency: soon
   must_consider: [[hyperlipidemia, hypercholesterolemia, dyslipidemia, cardiovascular risk]]
+
+# --- specialty coverage (dermatology, nephrology, rheumatology, heme-onc, urology, ENT, ophthalmology) ---
+
+- id: derm-changing-mole
+  population: adult
+  case: >-
+    52-year-old woman with a mole on her back that her husband says has grown and darkened over 3 months.
+    About 8 mm, irregular border, two shades of brown and a black area. Not itchy or bleeding.
+  screen_urgency: routine
+  min_urgency: soon
+  max_urgency: urgent
+  must_consider: [[melanoma]]
+  cant_miss: [[melanoma]]
+
+- id: derm-sjs
+  population: adult
+  case: >-
+    34-year-old started lamotrigine 3 weeks ago, now has fever, painful dusky red skin with blisters on the
+    chest, and sores in the mouth and eyes.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[Stevens-Johnson, SJS, toxic epidermal necrolysis, TEN]]
+  cant_miss: [[Stevens-Johnson, SJS, toxic epidermal necrolysis, TEN]]
+
+- id: nephro-hyperkalemia
+  population: adult
+  case: >-
+    70-year-old man with CKD stage 4 on lisinopril and spironolactone, feels weak. Potassium 6.8 mmol/L today,
+    creatinine 3.1 mg/dL (baseline 2.4).
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[hyperkalemia]]
+  must_call: [[calc_egfr_ckd_epi_2021, calc_creatinine_clearance_cockcroft_gault]]
+
+- id: rheum-gca
+  population: adult
+  case: >-
+    74-year-old woman with 2 weeks of new temporal headache, scalp tenderness when brushing her hair, pain in
+    the jaw when chewing, and one episode of blurred vision in the right eye yesterday.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[giant cell arteritis, temporal arteritis, GCA]]
+  cant_miss: [[giant cell arteritis, temporal arteritis, GCA]]
+
+- id: rheum-hot-knee
+  population: adult
+  case: >-
+    61-year-old man with a hot, swollen, very painful right knee since yesterday, temperature 38.4 C. History of gout.
+  screen_urgency: urgent
+  min_urgency: urgent
+  must_consider: [[septic arthritis], [gout]]
+  cant_miss: [[septic arthritis]]
+
+- id: onc-neutropenic-fever
+  population: adult
+  case: >-
+    48-year-old woman on chemotherapy for breast cancer, last cycle 9 days ago, now has a temperature of 38.3 C
+    and chills. Feels otherwise okay.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[neutropenic fever, febrile neutropenia, neutropenic sepsis]]
+
+- id: uro-retention
+  population: adult
+  case: >-
+    78-year-old man has not been able to pass urine for 12 hours, lower abdominal pain and swelling. Started
+    an over-the-counter allergy pill (diphenhydramine) two days ago. Known enlarged prostate.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[urinary retention]]
+
+- id: ent-peritonsillar
+  population: adult
+  case: >-
+    24-year-old with 4 days of worsening sore throat, much worse on the left, muffled voice, can barely open
+    his mouth, painful swallowing and drooling. Temperature 38.6 C.
+  screen_urgency: emergency
+  min_urgency: urgent
+  must_consider: [[peritonsillar abscess, quinsy]]
+  cant_miss: [[peritonsillar abscess, quinsy, epiglottitis, retropharyngeal]]
+
+- id: ent-sudden-hearing-loss
+  population: adult
+  case: >-
+    45-year-old woke up with sudden hearing loss in the right ear and ringing. No pain, no discharge, no cold.
+  screen_urgency: urgent
+  min_urgency: urgent
+  must_consider: [[sudden sensorineural hearing loss, SSNHL, sudden hearing loss]]
+
+- id: eye-angle-closure
+  population: adult
+  case: >-
+    63-year-old woman with a severely painful red left eye, blurred vision with halos around lights, headache
+    and vomiting since watching a film in a dark cinema this evening.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[angle-closure glaucoma, acute angle closure, glaucoma]]
+  cant_miss: [[angle-closure glaucoma, acute angle closure, glaucoma]]
+
+- id: eye-retinal-detachment
+  population: adult
+  case: >-
+    58-year-old very short-sighted man noticed flashing lights and a shower of new floaters in his right eye,
+    and now a dark curtain coming over the top of his vision.
+  screen_urgency: emergency
+  min_urgency: emergency
+  must_consider: [[retinal detachment, retinal tear]]
+  cant_miss: [[retinal detachment, retinal tear]]

@@ -63,7 +63,10 @@ class OpenAICompatEngine:
         ]
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": run.charter + "\n\n# Clinical skill library\n" + run.skills_text},
-            {"role": "user", "content": run.user_prompt},
+            {"role": "user", "content": run.user_prompt if not run.images else [
+                {"type": "image_url", "image_url": {"url": i.get("url") or f"data:{i['media_type']};base64,{i['data']}"}}
+                for i in run.images
+            ] + [{"type": "text", "text": run.user_prompt}]},
         ]
         if run.progress:
             await run.progress(0, "Attending reviewing the case")

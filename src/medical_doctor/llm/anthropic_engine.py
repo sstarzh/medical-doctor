@@ -49,6 +49,7 @@ class AnthropicEngine:
         web_search: bool = True,
         web_search_uses: int = 3,
         fast: bool = False,
+        fallback_model: str | None = None,
         request_timeout: float = 240.0,
         client: Any = None,
     ):
@@ -57,6 +58,7 @@ class AnthropicEngine:
         self.web_search = web_search
         self.web_search_uses = web_search_uses
         self.fast = fast
+        self.fallback_model = fallback_model
         self.request_timeout = request_timeout
         self._client = client
 
@@ -84,10 +86,13 @@ class AnthropicEngine:
         try:
             async with self.client.beta.messages.stream(**kwargs, **self._common()) as stream:
                 return await stream.get_final_message()
-        except (anthropic.RateLimitError, anthropic.BadRequestError):
-            if not self.fast:
+        except (anthropic.RateLimitError, anthropic.BadRequestError) as exc:
+            if self.fast:
+                self.fast = False
+            elif self.fallback_model and isinstance(exc, anthropic.BadRequestError) and self.model != self.fallback_model:
+                self.model = self.fallback_model  # e.g. the reviewer model is not available to this account
+            else:
                 raise
-            self.fast = False
             async with self.client.beta.messages.stream(**kwargs, **self._common()) as stream:
                 return await stream.get_final_message()
 
@@ -111,7 +116,14 @@ class AnthropicEngine:
              # 1 h: consults are sporadic, so the default 5-minute cache would usually be cold.
              "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         ]
-        messages: list[dict[str, Any]] = [{"role": "user", "content": run.user_prompt}]
+        first: Any = run.user_prompt
+        if run.images:
+            first = [
+                {"type": "image", "source": {"type": "url", "url": i["url"]} if "url" in i else
+                 {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
+                for i in run.images
+            ] + [{"type": "text", "text": run.user_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
         if run.progress:
             await run.progress(0, "Attending reviewing the case")
 

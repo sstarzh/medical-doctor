@@ -96,6 +96,16 @@ def visit_note(case: str, question: str | None, structured: dict[str, Any]) -> d
     return {"title": f"Consult: {title}", "text": "\n\n".join(parts)[:20000], "date": date.today().isoformat()}
 
 
+def reported_case(note_text: str) -> str:
+    """Only what the patient reported in a visit note: the text after 'Patient reported:' and before the
+    note's own conclusions (Question/Urgency/Differential/...). Used to keep a second opinion blinded."""
+    text = note_text.split("Patient reported:", 1)[-1]
+    for marker in ("\n\nQuestion:", "\n\nUrgency:", "\n\nDifferential:", "\n\nRecommended evaluation:",
+                   "\n\nManagement:", "\n\nReturn precautions:"):
+        text = text.split(marker, 1)[0]
+    return text.strip()
+
+
 class AutoChart:
     """Server-side chart memory: resolve (and on first visit open) the patient's chart before a consult,
     and save what the patient stated plus a visit note after it. The client model cannot forget to."""
@@ -128,6 +138,20 @@ class AutoChart:
         if how == "ambiguous":
             ctx.profiles = await svc.list_patients(p.owner, p.client_id)
         return ctx
+
+    async def save_note(self, ctx: ChartContext, structured: dict[str, Any], note: dict[str, Any]) -> None:
+        """File a dated note (e.g. a second opinion) in the resolved chart, with the same someone-else guard."""
+        if not (self.enabled and ctx.patient_id and ctx.owner):
+            return
+        if ctx.resolved_by != "given" and structured.get("patient_is_user") is False:
+            ctx.reason = "About someone else: not filed in this chart. Pass that person's patient_id."
+            return
+        try:
+            ctx.saved = await self.records.service.record_facts(  # type: ignore[union-attr]
+                ctx.owner, ctx.client_id, ctx.patient_id, [], {**note, "date": date.today().isoformat()}
+            )
+        except RecordsError as exc:
+            ctx.reason = f"Chart not updated: {exc}"
 
     async def save_visit(self, ctx: ChartContext, case: str, question: str | None, structured: dict[str, Any]) -> None:
         if not (self.enabled and ctx.patient_id and ctx.owner):
@@ -397,7 +421,8 @@ def register_chart_memory_tools(mcp: MCPServer, records: Records, charting: Auto
 
     @mcp.tool(annotations=WRITE, title="My chart (start every conversation here)")
     async def my_chart(patient_id: PatientId | None = None) -> dict[str, Any]:
-        """Call this FIRST in every health conversation. Returns the person's chart summary (history, medicines,
+        """Call this FIRST, automatically and without being asked, whenever the user mentions anything about
+        their health, symptoms, medicines or results: this is their personal doctor's record of them. Returns the person's chart summary (history, medicines,
         allergies, results, recent visit notes, open care items) so you can treat them as a returning patient.
         On a first visit it opens a new encrypted chart for them. With several family profiles, pass patient_id
         (the list is returned). Then save everything they tell you with chart_record."""
@@ -422,7 +447,7 @@ def register_chart_memory_tools(mcp: MCPServer, records: Records, charting: Auto
         patient_id: PatientId | None = None,
         note: Annotated[str | None, Field(max_length=20_000)] = None,
     ) -> dict[str, Any]:
-        """Save what the patient tells you, every time they tell you anything about their health. One call
+        """Call automatically, without being asked, every time the user shares anything about their health. One call
         can save many facts; each is {"section": ..., "data": {...}} using the patient_update field names
         (profile, social_history, conditions, medications, allergies, immunizations, procedures,
         family_history, observations). Facts about the same thing (same medicine, allergy, condition ...) update
