@@ -131,8 +131,11 @@ def _salvage(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     # Always normalize: a list/dict urgency would otherwise reach a set lookup unhashed. None falls back
     # to the note's "## Urgency" line.
     data["urgency"] = _urgency(data.get("urgency"))
+    def as_list(value: Any) -> list[Any]:  # a lone string/object is one item, never one item per character
+        return [value] if isinstance(value, (str, dict)) else list(value) if isinstance(value, list) else []
+
     ddx = []
-    for d in data.get("differential") or []:
+    for d in as_list(data.get("differential")):
         if isinstance(d, str):
             d = {"diagnosis": d}
         if not isinstance(d, dict):
@@ -155,9 +158,10 @@ def _salvage(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     if "differential" in data:
         data["differential"] = ddx[:25]
     cites = []
-    for c in data.get("citations") or []:
+    for c in as_list(data.get("citations")):
         if isinstance(c, str):
-            c = {"label": c}
+            m = re.search(r"PMID\D{0,3}(\d{5,9})", c, re.I)
+            c = {"label": c, "pmid": m.group(1) if m else None}
         if isinstance(c, dict):
             c = {**c, "pmid": (str(c["pmid"]).strip() or None) if c.get("pmid") is not None else None}
             if c.get("pmid") and not str(c["pmid"]).isdigit():
@@ -169,19 +173,22 @@ def _salvage(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
                 notes.append("dropped a citation")
     if "citations" in data:
         data["citations"] = cites[:40]
-    for key in ("recommended_evaluation", "management", "drafts", "missing_information", "return_precautions"):
+    for key, limit in (("recommended_evaluation", 40), ("management", 40), ("drafts", 20),
+                       ("missing_information", 30), ("return_precautions", 20)):  # the schema's own limits
         v = data.get(key)
         if isinstance(v, str):
             data[key] = [v]
         elif isinstance(v, list):
-            data[key] = [x if isinstance(x, str) else json.dumps(x) for x in v][:40]
+            data[key] = [x if isinstance(x, str) else json.dumps(x) for x in v][:limit]
     for key, limit in (("urgency_reason", 1000), ("immediate_action", 1000), ("problem_representation", 2000),
                        ("patient_explanation", 5000)):
         if isinstance(data.get(key), str):
             data[key] = data[key][:limit]
         elif key in data and data[key] is not None:
             data[key] = str(data[key])[:limit]
-    if not isinstance(data.get("patient_facts"), list):
+    if isinstance(data.get("patient_facts"), list):
+        data["patient_facts"] = [f for f in data["patient_facts"] if isinstance(f, dict)][:40]
+    else:
         data.pop("patient_facts", None)
     if isinstance(data.get("patient_is_user"), str):
         data["patient_is_user"] = data["patient_is_user"].strip().lower() in ("true", "yes")

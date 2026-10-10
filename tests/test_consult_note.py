@@ -115,3 +115,15 @@ def test_odd_urgency_shapes_never_crash(value):
     note = "## Urgency\nURGENT\n\n```json\n" + _json.dumps({"urgency": value, "differential": ["Pneumonia"]}) + "\n```"
     _, s = consult_note.structure(note, None)
     assert s["urgency"] == "urgent" and s["source"] == "model"
+
+
+def test_lone_strings_are_one_item_and_long_lists_fit_the_schema():
+    import json as _json
+
+    raw = {"urgency": "routine", "differential": "Viral URI", "citations": "PMID: 31504429",
+           "return_precautions": [f"sign {i}" for i in range(25)], "drafts": [f"d{i}" for i in range(30)],
+           "missing_information": [f"q{i}" for i in range(35)], "patient_facts": [{"section": "conditions", "data": {}}] * 45}
+    _, s = consult_note.structure("```json\n" + _json.dumps(raw) + "\n```", None)
+    assert s["source"] == "model" and s["differential"] == [{"diagnosis": "Viral URI", "likelihood": "possible", "cant_miss": False}]
+    assert len(s["citations"]) == 1 and s["citations"][0]["pmid"] == "31504429"
+    assert (len(s["return_precautions"]), len(s["drafts"]), len(s["missing_information"]), len(s["patient_facts"])) == (20, 20, 30, 40)
