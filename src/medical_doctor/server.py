@@ -48,10 +48,17 @@ Workflow for any health question:
    calculator, drug-label, PubMed and trials tools here, and the skills (`list_skills`/`get_skill`).
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
 4. `search` / `fetch` find and read skills, calculators and PubMed articles.
-5. Personal doctor: the user can keep an encrypted chart for themselves and family members
-   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`, or `patient_import_fhir` for records
-   exported from a hospital or health app). Pass `patient_id` to `consult`
-   so the attending sees the history. Use the `personal_doctor_visit` / `patient_intake` prompts.
+5. Personal doctor. The encrypted chart is the ONLY memory that survives between conversations;
+   nothing is saved unless you call a write tool (`consult` itself never saves).
+   - At the start of every health conversation call `patient_list`. If the user has a profile, use its
+     `patient_id` (read it with `patient_chart`, pass it to `consult`).
+   - When the user shares lasting facts about themselves or a family member (age/date of birth, sex,
+     weight, conditions, medicines, allergies, surgeries, family history, results), offer once to keep them
+     in their chart; after they agree, `patient_create` (if no profile yet) and `patient_update` each fact.
+     `consult` returns `suggested_chart_updates` ready to save. Save only facts the user stated or confirmed,
+     never your hypotheses.
+   - `patient_import_fhir` and `ehr_connect` bring in records from hospitals and patient portals.
+   - The `personal_doctor_visit` / `patient_intake` prompts run a full visit or intake.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
    presented as calls to action — never as prescriptions or orders.
 
@@ -83,6 +90,23 @@ def current_user() -> dict[str, Any]:
         "client_id": token.client_id,
         "scopes": token.scopes,
     }
+
+
+def chart_suggestions(structured: dict[str, Any]) -> list[dict[str, Any]]:
+    """Facts the patient stated, validated against the chart schema, ready for patient_update.
+    Invalid or unknown entries are dropped; nothing is written here."""
+    from .records.model import SECTIONS, validate_item
+
+    out = []
+    for fact in structured.get("patient_facts") or []:
+        section, data = fact.get("section"), fact.get("data")
+        if section not in SECTIONS or section in ("care_plan", "notes") or not isinstance(data, dict):
+            continue
+        try:
+            out.append({"section": section, "data": validate_item(section, data)})
+        except ValueError:
+            continue
+    return out[:40]
 
 
 class RateLimiter:
@@ -346,6 +370,14 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             )
             result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)
+        result["suggested_chart_updates"] = chart_suggestions(result.get("structured") or {})
+        result["saved_to_chart"] = False
+        result["memory_note"] = (
+            "consult does not save anything. Offer to record confirmed facts with patient_update "
+            f"(patient_id {patient_id})." if patient_id else
+            "Nothing from this conversation is saved yet. If the user wants their doctor to remember them next time, "
+            "create a profile with patient_create and save the confirmed facts (suggested_chart_updates) with patient_update."
+        )
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
         return result

@@ -52,6 +52,7 @@ class ConsultSummary(_M):
     patient_explanation: str = Field(default="", max_length=5000)
     return_precautions: list[str] = Field(default_factory=list, max_length=20)
     citations: list[Citation] = Field(default_factory=list, max_length=40)
+    patient_facts: list[dict[str, Any]] = Field(default_factory=list, max_length=40)  # see OUTPUT_CONTRACT
 
 
 OUTPUT_CONTRACT = """\
@@ -64,8 +65,12 @@ content as the note, no new claims:
                    "cant_miss": false, "key_for": "...", "key_against": "..."}],
  "recommended_evaluation": ["..."], "management": ["..."], "drafts": ["..."],
  "missing_information": ["..."], "patient_explanation": "...", "return_precautions": ["..."],
- "citations": [{"label": "...", "pmid": "12345678", "url": "...", "supports": "the claim it backs"}]}
-Only list PMIDs/URLs you actually retrieved with a tool this consult."""
+ "citations": [{"label": "...", "pmid": "12345678", "url": "...", "supports": "the claim it backs"}],
+ "patient_facts": [{"section": "profile|conditions|medications|allergies|procedures|family_history|observations|social_history|immunizations",
+                    "data": {...chart fields, e.g. {"name": "lisinopril", "dose": "10 mg", "frequency": "daily"}}}]}
+Only list PMIDs/URLs you actually retrieved with a tool this consult. patient_facts holds only facts the case
+STATES about the patient (history, medicines, allergies, measurements) and that are not already in the
+<patient_chart>; never diagnoses you are proposing."""
 
 _FENCE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```\s*$", re.S)
 _URGENCY_LINE = re.compile(r"##\s*Urgency\s*\n+\s*\**\s*(EMERGENCY|URGENT|SOON|ROUTINE)", re.I)
