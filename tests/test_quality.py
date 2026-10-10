@@ -158,3 +158,68 @@ async def test_fresh_case_panel_uses_reviewer_when_no_other_provider(monkeypatch
                                       settings=Settings(verify_citations=False), engine=StubEngine("anthropic", "Opus note"),
                                       second_opinion=True)
     assert calls and len(res["panel"]) == 2
+
+
+# --- photos ----------------------------------------------------------------------------
+
+PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+
+
+def test_image_validation():
+    from medical_doctor.llm.base import normalize_images
+
+    assert normalize_images([{"url": "https://x.example/rash.jpg"}, {"data": PNG, "media_type": "image/png"}]) == [
+        {"url": "https://x.example/rash.jpg"}, {"data": PNG, "media_type": "image/png"}]
+    for bad in ([{"url": "http://x/a.jpg"}], [{"data": PNG, "media_type": "image/tiff"}], [{"data": "!!!", "media_type": "image/png"}],
+                [{"url": "https://x/a.jpg"}] * 5):
+        with pytest.raises(ValueError):
+            normalize_images(bad)
+
+
+async def test_images_reach_both_engine_families():
+    from types import SimpleNamespace
+
+    from medical_doctor.llm.anthropic_engine import AnthropicEngine
+    from medical_doctor.llm.base import ConsultRun
+    from medical_doctor.llm.openai_compat import OpenAICompatEngine
+    from tests.test_providers import FakeChat, _choice
+
+    run = ConsultRun(charter="C", skills_text="S", user_prompt="rash on arm", tools=[], execute=echo,
+                     images=[{"data": PNG, "media_type": "image/png"}, {"url": "https://x.example/a.jpg"}])
+    fake = FakeChat([_choice(content="note")])
+    await OpenAICompatEngine(provider="openai", model="m", api_key="x", client=fake).consult(run)
+    content = fake.calls[0]["messages"][1]["content"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,") and content[-1]["text"] == "rash on arm"
+
+    seen = {}
+
+    class S:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get_final_message(self):
+            return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="note")], model="m",
+                                   usage=SimpleNamespace(input_tokens=1, output_tokens=1, cache_read_input_tokens=0))
+
+    def stream(**kw):
+        seen.update(kw)
+        return S()
+
+    eng = AnthropicEngine(client=SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(stream=stream))), web_search=False)
+    await eng.consult(run)
+    blocks = seen["messages"][0]["content"]
+    assert blocks[0]["source"]["type"] == "base64" and blocks[1]["source"] == {"type": "url", "url": "https://x.example/a.jpg"}
+
+
+async def test_consult_rejects_bad_images_before_spending(monkeypatch):
+    from mcp import Client
+
+    from medical_doctor.server import mcp
+
+    monkeypatch.setattr(physician, "credentials_for", lambda p: True)
+    async with Client(mcp) as c:
+        r = await c.call_tool("consult", {"case": "rash", "images": [{"url": "http://insecure/a.jpg"}]})
+    assert r.is_error and "https" in r.content[0].text

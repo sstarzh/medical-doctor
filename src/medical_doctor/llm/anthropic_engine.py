@@ -116,7 +116,14 @@ class AnthropicEngine:
              # 1 h: consults are sporadic, so the default 5-minute cache would usually be cold.
              "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         ]
-        messages: list[dict[str, Any]] = [{"role": "user", "content": run.user_prompt}]
+        first: Any = run.user_prompt
+        if run.images:
+            first = [
+                {"type": "image", "source": {"type": "url", "url": i["url"]} if "url" in i else
+                 {"type": "base64", "media_type": i["media_type"], "data": i["data"]}}
+                for i in run.images
+            ] + [{"type": "text", "text": run.user_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "user", "content": first}]
         if run.progress:
             await run.progress(0, "Attending reviewing the case")
 

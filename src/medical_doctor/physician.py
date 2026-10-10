@@ -277,6 +277,7 @@ async def run_consult(
     second_opinion: bool = False,
     depth: str | None = None,
     chart: dict[str, Any] | None = None,
+    images: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     settings = settings or Settings()
     profile = depth_profile(settings, depth, triage.get("urgency"))
@@ -287,7 +288,7 @@ async def run_consult(
     def run_for(e: Engine, prog: Progress | None) -> ConsultRun:
         return ConsultRun(
             charter=CHARTER, skills_text=skills_for(e, case), user_prompt=prompt, tools=tools,
-            execute=execute_tool, progress=prog, max_rounds=profile["max_rounds"],
+            execute=execute_tool, progress=prog, max_rounds=profile["max_rounds"], images=images or [],
         )
 
     panel: list[Engine] = [engine]

@@ -33,6 +33,7 @@ from .records_tools import (
     register_order_tools,
     register_record_tools,
 )
+from .llm.base import normalize_images
 from .observability import ToolTimingMiddleware, consult_span, record_consult
 from .skills import freshness as skill_freshness, load_skills
 
@@ -295,6 +296,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         provider: Literal["anthropic", "openai", "meta", "llama"] | None = None,
         second_opinion: bool = False,
         depth: Literal["quick", "standard", "thorough"] | None = None,
+        images: Annotated[list[dict[str, str]] | None, Field(max_length=4)] = None,
     ) -> dict[str, Any]:
         """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
         pediatrics, incl. neonates and adolescents). Give the whole case: age (days/months for infants), weight
@@ -305,7 +307,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child.
         The patient's chart is loaded automatically (their own, or the profile given by patient_id; a chart is
         opened on their first visit), and after the consult the facts they stated and a visit note are saved to
-        it (see `chart` in the result). Pass patient_id when the case is about a family member. provider: which model family runs the consult (anthropic|openai|meta|llama; default
+        it (see `chart` in the result). Pass patient_id when the case is about a family member.
+        images: up to 4 photos (rash, wound, eye, a lab report or medication label) as {"url": "https://..."} or
+        {"data": <base64>, "media_type": "image/jpeg"}. If you can see the patient's photo but cannot pass its
+        bytes, describe it precisely in `case` instead (location, size, color, borders, texture, spread). provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
         their notes, listing disagreements. depth: 'quick' (fastest; fewer tool rounds, no web search — good for
         triage and simple questions), 'standard' (default), or 'thorough' (most verification; slowest). Every depth
@@ -322,6 +327,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         # Audit who/when/urgency only — never the clinical text (PHI).
         audit.info("consult owner=%s client=%s urgency=%s chart=%s", who, user.get("client_id"), triage["urgency"], bool(patient_id))
         chosen = provider or settings.llm_provider
+        try:
+            photos = normalize_images(images)
+        except ValueError as exc:
+            raise ToolError(str(exc)) from None
         # The chart this conversation is about: given, the account's only/self profile, or (first visit)
         # a new 'self' profile. Retrieval and saving happen on the server, not at the client's discretion.
         chart = await charting.resolve(patient_id, user.get("name"))
@@ -371,11 +380,13 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 second_opinion=second_opinion,
                 depth=depth,
                 chart=chart_data,
+                images=photos,
             )
             result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)
         if result.get("ok"):
-            await charting.save_visit(chart, case, question, result.get("structured") or {})
+            photo_note = f"\n\n[{len(photos)} photo(s) reviewed; images are not stored]" if photos else ""
+            await charting.save_visit(chart, case + photo_note, question, result.get("structured") or {})
         result["chart"] = chart.public()
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
