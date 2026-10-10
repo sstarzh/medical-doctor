@@ -223,3 +223,10 @@ async def test_consult_rejects_bad_images_before_spending(monkeypatch):
     async with Client(mcp) as c:
         r = await c.call_tool("consult", {"case": "rash", "images": [{"url": "http://insecure/a.jpg"}]})
     assert r.is_error and "https" in r.content[0].text
+
+
+def test_cant_miss_words_do_not_match_inside_other_words():
+    triage = screen("started lamotrigine, now painful blisters on the chest and sores in the mouth").to_dict()
+    structured = {"source": "model", "urgency": "emergency", "differential": [{"diagnosis": "tension headache, often viral"}]}
+    r = quality.review(structured, "often a viral rash", triage, None)
+    assert any(f["check"] == "cant_miss" for f in r["findings"])
