@@ -66,3 +66,85 @@ def test_no_false_alarm(text):
 def test_negation_does_not_hide_later_positive_clause():
     r = screen("no headache. Now has fever and stiff neck")
     assert "meningitis" in {h.id for h in r.hits}
+
+
+# --- Regression corpus (misses and false alarms found in the adversarial review) ----------
+
+EMERGENCY = [
+    "He has no history of heart disease and now has chest pain.",
+    "Pt with no prior hx presenting w/ R-sided weakness and aphasia",
+    "Patient denies fever, has crushing chest pain.",
+    "His face is drooping on one side.",
+    "Her left arm and leg suddenly went weak.",
+    "I can't move my right arm suddenly.",
+    "I think I'm having a stroke",
+    "I'm having a heart attack",
+    "65M with STEMI on ECG",
+    "She is not breathing",
+    "He collapsed and isn't breathing.",
+    "cardiac arrest",
+    "he has no pulse",
+    "He cannot breathe",
+    "I'm short of breath at rest and my lips are blue.",
+    "His lips turned blue and he stopped breathing.",
+    "He's not responding",
+    "My father is not making sense and has a fever of 39",
+    "He fell and hit his head and is now confused.",
+    "I took 30 tylenol pills.",
+    "took a bunch of pills to end it all",
+    "I don't want to live anymore",
+    "I'm thinking about ending my life.",
+    "his throat is closing",
+    "my tongue is swelling up after eating peanuts",
+    "blood sugar is 600",
+    "glucose 1200 mg/dl",
+    "blood sugar 35 and shaky",
+    "my baby is 6 weeks old and has a temperature of 38.5",
+    "my 10 week old is hot, 100.6F",
+    "My child swallowed a battery.",
+    "My toddler drank bleach.",
+    "My testicle hurts suddenly and it's swollen.",
+]
+URGENT = [
+    "glucose 450",
+    "Sugar of 55.",
+    "sats are 91%.",
+    "I passed out.",
+    "BP 250/140.",
+    "my son hasn't peed in 12 hours",
+]
+ROUTINE = [
+    "I'm not suicidal.",
+    "No chest pain, no shortness of breath.",
+    "I have no history of stroke.",
+    "I ruled out pregnancy; ectopic is not a concern",
+    "History of seizures as a child, now well, here for med refill.",
+    "Patient on aspirin for prior stroke; well today.",
+    "I have type 1 diabetes and want advice on carb counting with ketones testing.",
+    "I ate 2 tablets of my vitamins as prescribed.",
+    "Overdue for a colonoscopy.",
+    "He is responding well to the new inhaler.",
+]
+
+
+@pytest.mark.parametrize("text", EMERGENCY)
+def test_corpus_emergency(text):
+    assert screen(text).urgency == "emergency", screen(text).to_dict()
+
+
+@pytest.mark.parametrize("text", URGENT)
+def test_corpus_urgent(text):
+    assert screen(text).urgency == "urgent", screen(text).to_dict()
+
+
+@pytest.mark.parametrize("text", ROUTINE)
+def test_corpus_routine(text):
+    assert screen(text).urgency == "routine", screen(text).to_dict()
+
+
+def test_screen_is_bounded_on_huge_input():
+    import time
+
+    start = time.time()
+    screen("chest discomfort " * 200_000)
+    assert time.time() - start < 2

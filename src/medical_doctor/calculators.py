@@ -20,6 +20,12 @@ def _result(name: str, value: float | int, interpretation: str, reference: str, 
     return out
 
 
+def _round_half_up(x: float, digits: int = 0) -> float:
+    """Clinical scores round halves up (UNOS); Python's round() rounds halves to even."""
+    factor = 10**digits
+    return math.floor(x * factor + 0.5) / factor
+
+
 def _require_positive(**values: float) -> None:
     for key, val in values.items():
         if val is None or val <= 0:
@@ -168,19 +174,24 @@ def heart_score(
     return _result("HEART score", score, interp, "Six AJ et al. Neth Heart J 2008;16:191-6; Backus BE et al. Int J Cardiol 2013", age_points=age_pts)
 
 
-def qtc(qt_ms: float, heart_rate_bpm: float) -> dict[str, Any]:
-    """Corrected QT by Bazett and Fridericia (Fridericia preferred at HR extremes)."""
+def qtc(qt_ms: float, heart_rate_bpm: float, sex: Sex | None = None) -> dict[str, Any]:
+    """Corrected QT by Bazett and Fridericia (Fridericia preferred at HR extremes). QT in milliseconds."""
     _require_positive(qt_ms=qt_ms, heart_rate_bpm=heart_rate_bpm)
+    if not 200 <= qt_ms <= 800:
+        raise ValueError("qt_ms must be in milliseconds (200-800); e.g. 0.44 s = 440 ms")
+    if not 20 <= heart_rate_bpm <= 300:
+        raise ValueError("heart_rate_bpm must be 20-300")
     rr = 60.0 / heart_rate_bpm
     bazett = round(qt_ms / math.sqrt(rr))
     fridericia = round(qt_ms / rr ** (1 / 3))
     q = fridericia
+    limit = {"female": 470, "male": 450}.get(sex or "", 450)
     if q >= 500:
         interp = "Markedly prolonged (>=500 ms): high torsades risk; stop QT-prolonging drugs, check K/Mg."
-    elif q > 470:
-        interp = "Prolonged (>470 ms women / >450 ms men is abnormal)."
-    elif q > 450:
-        interp = "Borderline-prolonged (abnormal in men >450 ms)."
+    elif q > limit:
+        interp = f"Prolonged (>{limit} ms{' for ' + sex + 's' if sex else '; >470 women / >450 men'})."
+    elif q > 450 and sex is None:
+        interp = "Borderline: prolonged in men (>450 ms), normal in women (<=470 ms)."
     else:
         interp = "Normal."
     return _result(
@@ -323,11 +334,11 @@ def meld_na(
     bili = max(bilirubin_mg_dl, 1.0)
     inr_ = max(inr, 1.0)
     meld = 10 * (0.957 * math.log(cr) + 0.378 * math.log(bili) + 1.120 * math.log(inr_) + 0.643)
-    meld = round(meld, 1)
+    meld = _round_half_up(meld, 1)
     na = min(max(sodium_meq_l, 125), 137)
     if meld > 11:
         meld = meld + 1.32 * (137 - na) - 0.033 * meld * (137 - na)
-    score = min(round(meld), 40)
+    score = min(int(_round_half_up(meld)), 40)
     if score < 10:
         mort = "~1.9%"
     elif score < 20:
@@ -342,7 +353,45 @@ def meld_na(
         "MELD-Na",
         score,
         f"Estimated 90-day mortality {mort}. MELD >=15 generally warrants transplant evaluation.",
-        "Kim WR et al. N Engl J Med 2008;359:1018-26; OPTN policy 2016",
+        "Kim WR et al. N Engl J Med 2008;359:1018-26. Note: OPTN allocation uses MELD 3.0 since 2023 (calc_meld_3).",
+    )
+
+
+def meld_3(
+    creatinine_mg_dl: float,
+    bilirubin_mg_dl: float,
+    inr: float,
+    sodium_meq_l: float,
+    albumin_g_dl: float,
+    sex: Sex,
+    dialysis_twice_in_past_week: bool = False,
+) -> dict[str, Any]:
+    """MELD 3.0 (OPTN liver allocation since 2023): adds sex and albumin to MELD-Na."""
+    _require_positive(creatinine_mg_dl=creatinine_mg_dl, bilirubin_mg_dl=bilirubin_mg_dl, inr=inr,
+                      sodium_meq_l=sodium_meq_l, albumin_g_dl=albumin_g_dl)
+    cr = 3.0 if dialysis_twice_in_past_week else min(max(creatinine_mg_dl, 1.0), 3.0)
+    bili, inr_ = max(bilirubin_mg_dl, 1.0), max(inr, 1.0)
+    na = min(max(sodium_meq_l, 125), 137)
+    alb = min(max(albumin_g_dl, 1.5), 3.5)
+    female = 1.0 if sex == "female" else 0.0
+    value = (
+        1.33 * female
+        + 4.56 * math.log(bili)
+        + 0.82 * (137 - na)
+        - 0.24 * (137 - na) * math.log(bili)
+        + 9.09 * math.log(inr_)
+        + 11.14 * math.log(cr)
+        + 1.85 * (3.5 - alb)
+        - 1.83 * (3.5 - alb) * math.log(cr)
+        + 6
+    )
+    score = min(max(int(_round_half_up(value)), 6), 40)
+    return _result(
+        "MELD 3.0",
+        score,
+        "Higher scores predict higher 90-day mortality; used for US liver transplant allocation. "
+        "MELD >=15 generally warrants transplant evaluation.",
+        "Kim WR et al. Gastroenterology 2021;161:1887-95; OPTN policy 2023",
     )
 
 
@@ -453,6 +502,7 @@ CALCULATORS = {
     "qsofa": qsofa,
     "centor_mcisaac": centor_mcisaac,
     "meld_na": meld_na,
+    "meld_3": meld_3,
     "glasgow_coma_scale": glasgow_coma_scale,
     "anion_gap": anion_gap,
     "corrected_calcium": corrected_calcium,

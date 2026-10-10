@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+
+import anyio
 import os
 import sqlite3
 import threading
@@ -133,6 +135,30 @@ class Store:
                 self._db.execute("ROLLBACK")
                 raise
         return allowed
+
+
+class AsyncStore:
+    """Async facade over a sync store: every call runs in a worker thread, so SQLite locks and
+    Postgres round trips never block the event loop (and every other session with it)."""
+
+    def __init__(self, store: Any):
+        self.sync = store
+
+    @property
+    def caps(self) -> dict[str, int]:
+        return self.sync.caps
+
+    @caps.setter
+    def caps(self, value: dict[str, int]) -> None:
+        self.sync.caps = value
+
+    def __getattr__(self, name: str) -> Any:
+        fn = getattr(self.sync, name)
+
+        async def call(*args: Any, **kwargs: Any) -> Any:
+            return await anyio.to_thread.run_sync(lambda: fn(*args, **kwargs))
+
+        return call
 
 
 def open_store(settings: Any) -> Any:

@@ -10,10 +10,14 @@ Set NCBI_API_KEY to raise PubMed rate limits and OPENFDA_API_KEY for openFDA.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import httpx2 as httpx
 
 OPENFDA = "https://api.fda.gov"
@@ -40,8 +44,63 @@ LABEL_SECTIONS = (
 )
 
 
-def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+MAX_INTERACTION_DRUGS = 12
+_RETRY_STATUS = {429, 500, 502, 503, 504}
+
+# One pooled client per event loop (connection reuse + TLS session reuse across calls).
+_shared: dict[int, httpx.AsyncClient] = {}
+
+
+@asynccontextmanager
+async def _client():
+    loop_id = id(asyncio.get_running_loop())
+    client = _shared.get(loop_id)
+    if client is None or client.is_closed:
+        _shared.clear()  # drop clients bound to dead loops (serverless runtimes)
+        client = httpx.AsyncClient(
+            timeout=TIMEOUT,
+            headers={"User-Agent": USER_AGENT},
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+        _shared[loop_id] = client
+    yield client
+
+
+async def _get(c: httpx.AsyncClient, url: str, **kwargs: Any) -> httpx.Response:
+    """GET with bounded retries on rate limiting / transient upstream errors (openFDA, NCBI)."""
+    for attempt in range(3):
+        r = await c.get(url, **kwargs)
+        if r.status_code not in _RETRY_STATUS or attempt == 2:
+            return r
+        try:
+            wait = float(r.headers.get("retry-after", ""))
+        except ValueError:
+            wait = 0.5 * 2**attempt
+        await asyncio.sleep(min(max(wait, 0.2), 3.0))
+    return r
+
+
+class _TTLCache:
+    def __init__(self, ttl: float, max_items: int = 512):
+        self.ttl, self.max_items = ttl, max_items
+        self._data: dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str) -> Any:
+        hit = self._data.get(key)
+        if hit and hit[0] > time.time():
+            return hit[1]
+        self._data.pop(key, None)
+        return None
+
+    def set(self, key: str, value: Any) -> None:
+        if len(self._data) >= self.max_items:
+            self._data.pop(next(iter(self._data)))
+        self._data[key] = (time.time() + self.ttl, value)
+
+
+_label_cache = _TTLCache(6 * 3600)
+_rxnorm_cache = _TTLCache(24 * 3600)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -58,14 +117,24 @@ def _lucene_escape(term: str) -> str:
 
 async def normalize_drug(name: str) -> dict[str, Any]:
     """Resolve a brand/misspelled drug name to RxNorm ingredient(s)."""
+    key = name.strip().lower()
+    if (cached := _rxnorm_cache.get(key)) is not None:
+        return cached
+    result = await _normalize_drug(name)
+    if result.get("found"):
+        _rxnorm_cache.set(key, result)
+    return result
+
+
+async def _normalize_drug(name: str) -> dict[str, Any]:
     async with _client() as c:
-        r = await c.get(f"{RXNAV}/approximateTerm.json", params={"term": name, "maxEntries": 3})
+        r = await _get(c, f"{RXNAV}/approximateTerm.json", params={"term": name, "maxEntries": 3})
         r.raise_for_status()
         cands = (r.json().get("approximateGroup") or {}).get("candidate") or []
         if not cands:
             return {"query": name, "found": False}
         rxcui = cands[0]["rxcui"]
-        r2 = await c.get(f"{RXNAV}/rxcui/{rxcui}/related.json", params={"tty": "IN+BN"})
+        r2 = await _get(c, f"{RXNAV}/rxcui/{rxcui}/related.json", params={"tty": "IN+BN"})
         r2.raise_for_status()
         groups = (r2.json().get("relatedGroup") or {}).get("conceptGroup") or []
         ingredients, brands = [], []
@@ -79,6 +148,16 @@ async def normalize_drug(name: str) -> dict[str, Any]:
 
 
 async def _fetch_label(c: httpx.AsyncClient, drug: str) -> dict[str, Any] | None:
+    key = drug.strip().lower()
+    if (cached := _label_cache.get(key)) is not None:
+        return cached
+    label = await _fetch_label_uncached(c, drug)
+    if label:
+        _label_cache.set(key, label)
+    return label
+
+
+async def _fetch_label_uncached(c: httpx.AsyncClient, drug: str) -> dict[str, Any] | None:
     q = _lucene_escape(drug)
     params: dict[str, Any] = {
         "search": f'openfda.generic_name:"{q}" OR openfda.brand_name:"{q}" OR openfda.substance_name:"{q}"',
@@ -86,7 +165,7 @@ async def _fetch_label(c: httpx.AsyncClient, drug: str) -> dict[str, Any] | None
     }
     if key := os.environ.get("OPENFDA_API_KEY"):
         params["api_key"] = key
-    r = await c.get(f"{OPENFDA}/drug/label.json", params=params)
+    r = await _get(c, f"{OPENFDA}/drug/label.json", params=params)
     if r.status_code == 404:
         return None
     r.raise_for_status()
@@ -127,11 +206,25 @@ async def drug_interactions(drugs: list[str]) -> dict[str, Any]:
     For every pair (A, B) we report the sentences in A's label that mention B
     (or B's class names, when the label lists them), and vice versa.
     """
-    drugs = [d.strip() for d in drugs if d.strip()]
+    drugs = list(dict.fromkeys(d.strip() for d in drugs if d.strip()))
     if len(drugs) < 2:
         raise ValueError("Provide at least two drugs")
+    if len(drugs) > MAX_INTERACTION_DRUGS:
+        raise ValueError(f"At most {MAX_INTERACTION_DRUGS} drugs per check; split longer lists")
+    sem = asyncio.Semaphore(4)
+
+    async def fetch(c: httpx.AsyncClient, d: str) -> dict[str, Any] | None:
+        async with sem:
+            return await _fetch_label(c, d)
+
     async with _client() as c:
-        labels = {d: await _fetch_label(c, d) for d in drugs}
+        fetched = await asyncio.gather(*(fetch(c, d) for d in drugs))
+    labels = dict(zip(drugs, fetched))
+    return await anyio.to_thread.run_sync(_match_interactions, drugs, labels)
+
+
+def _match_interactions(drugs: list[str], labels: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
+    """CPU-bound pairwise text matching; runs in a worker thread."""
     texts: dict[str, str] = {}
     aliases: dict[str, set[str]] = {}
     for d, lab in labels.items():
@@ -177,12 +270,12 @@ async def pubmed_search(query: str, max_results: int = 8, reviews_and_trials_onl
     if key := os.environ.get("NCBI_API_KEY"):
         base["api_key"] = key
     async with _client() as c:
-        r = await c.get(f"{EUTILS}/esearch.fcgi", params={**base, "term": term, "retmax": max(1, min(max_results, 25)), "sort": "relevance"})
+        r = await _get(c, f"{EUTILS}/esearch.fcgi", params={**base, "term": term, "retmax": max(1, min(max_results, 25)), "sort": "relevance"})
         r.raise_for_status()
         ids = r.json()["esearchresult"].get("idlist", [])
         if not ids:
             return {"query": term, "count": 0, "articles": []}
-        r2 = await c.get(f"{EUTILS}/esummary.fcgi", params={**base, "id": ",".join(ids)})
+        r2 = await _get(c, f"{EUTILS}/esummary.fcgi", params={**base, "id": ",".join(ids)})
         r2.raise_for_status()
         summ = r2.json().get("result", {})
     articles = []
@@ -209,7 +302,7 @@ async def pubmed_abstract(pmid: str) -> dict[str, Any]:
     if key := os.environ.get("NCBI_API_KEY"):
         params["api_key"] = key
     async with _client() as c:
-        r = await c.get(f"{EUTILS}/efetch.fcgi", params=params)
+        r = await _get(c, f"{EUTILS}/efetch.fcgi", params=params)
         r.raise_for_status()
     return {"pmid": pmid, "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/", "abstract": _clip(r.text, 8000)}
 
@@ -226,7 +319,7 @@ async def clinical_trials(condition: str, intervention: str | None = None, locat
     if recruiting_only:
         params["filter.overallStatus"] = "RECRUITING"
     async with _client() as c:
-        r = await c.get(f"{CTGOV}/studies", params=params)
+        r = await _get(c, f"{CTGOV}/studies", params=params)
         r.raise_for_status()
         data = r.json()
     studies = []

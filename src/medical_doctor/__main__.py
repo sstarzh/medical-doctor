@@ -15,6 +15,13 @@ import sys
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "gen-data-key":
+        from .records.crypto import generate_key
+
+        kid = sys.argv[2] if len(sys.argv) > 2 else "k1"
+        print(f"{kid}:{generate_key()}")
+        print("Set MEDICAL_DOCTOR_DATA_KEYS to this value (prepend new keys to rotate; keep old ones until re-wrapped).", file=sys.stderr)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "gen-key":
         label = sys.argv[2] if len(sys.argv) > 2 else "agent"
         print(f"{label}:mdk_{secrets.token_urlsafe(32)}")
@@ -32,19 +39,20 @@ def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     if args.transport == "stdio":
-        from .server import mcp
+        from .config import load_settings
+        from .server import build_server
 
-        mcp.run("stdio")
+        # Single local user: records live encrypted in ~/.medical-doctor with a local key file.
+        build_server(load_settings(), local_mode=True).run("stdio")
         return
 
     import uvicorn
 
-    from .config import load_settings
+    from .config import assert_safe_exposure, load_settings
     from .http import create_app
 
     settings = load_settings()
-    if settings.auth_mode == "none" and args.host not in ("127.0.0.1", "localhost", "::1"):
-        logging.warning("Serving on %s WITHOUT authentication. Set MEDICAL_DOCTOR_AUTH for any shared deployment.", args.host)
+    assert_safe_exposure(settings, args.host)
     app = create_app(settings, host=args.host, stateless=args.stateless, json_response=args.json_response)
     # Trust X-Forwarded-* only from known proxies (uvicorn default: 127.0.0.1). Behind a load
     # balancer that overwrites these headers (Cloud Run, ALB, ingress), set FORWARDED_ALLOW_IPS

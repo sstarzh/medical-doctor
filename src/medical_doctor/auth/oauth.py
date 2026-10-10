@@ -41,7 +41,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from ..config import Settings
-from .store import Store, StoreFull, digest
+from .store import AsyncStore, Store, StoreFull, digest
 from .upstream import HttpClientFactory, LoginError, UpstreamClient, check_access, default_http, pkce_pair
 from .verifiers import api_key_access_token
 
@@ -54,6 +54,36 @@ UNUSED_CLIENT_TTL = 24 * 3600  # registrations that never complete a sign-in exp
 BROWSER_COOKIE = "md_login"
 # Live-record caps for unauthenticated endpoints (dynamic registration, /authorize).
 STORE_CAPS = {"client": 10_000, "pending": 5_000, "upstream": 5_000}
+MAX_REDIRECT_URIS = 5
+MAX_CLIENT_NAME = 100
+MAX_CLIENT_RECORD_BYTES = 8_192
+AUTHORIZE_PER_CLIENT = (30, 600)  # pending sign-ins per client per 10 minutes
+_BLOCKED_SCHEMES = {"javascript", "data", "file", "vbscript", "about", "blob"}
+_LOOPBACK = {"localhost", "127.0.0.1", "::1", "[::1]"}
+
+
+def validate_client_metadata(info: OAuthClientInformationFull) -> None:
+    """Reject registrations that could be abused: oversized records, phishing-friendly or unsafe
+    redirect URIs (userinfo tricks like https://claude.ai@evil.example, plain http off-loopback,
+    script schemes). Native-app private schemes (cursor://, vscode://) remain allowed (RFC 8252)."""
+    uris = [str(u) for u in (info.redirect_uris or [])]
+    if not uris or len(uris) > MAX_REDIRECT_URIS:
+        raise RegistrationError("invalid_redirect_uri", f"Provide 1-{MAX_REDIRECT_URIS} redirect URIs")
+    for uri in uris:
+        parsed = urlparse(uri)
+        scheme = parsed.scheme.lower()
+        if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+            raise RegistrationError("invalid_redirect_uri", "Redirect URIs must not contain user info")
+        if scheme in _BLOCKED_SCHEMES or not scheme:
+            raise RegistrationError("invalid_redirect_uri", f"Scheme {scheme!r} is not allowed")
+        if scheme == "http" and (parsed.hostname or "") not in _LOOPBACK:
+            raise RegistrationError("invalid_redirect_uri", "http redirect URIs are only allowed for loopback")
+        if parsed.fragment:
+            raise RegistrationError("invalid_redirect_uri", "Redirect URIs must not contain a fragment")
+    if info.client_name and len(info.client_name) > MAX_CLIENT_NAME:
+        raise RegistrationError("invalid_client_metadata", f"client_name longer than {MAX_CLIENT_NAME} characters")
+    if len(info.model_dump_json(exclude_none=True)) > MAX_CLIENT_RECORD_BYTES:
+        raise RegistrationError("invalid_client_metadata", "Client metadata too large")
 
 
 class GrantAccessToken(AccessToken):
@@ -75,18 +105,20 @@ class BrokerOAuthProvider:
     def __init__(self, settings: Settings, store: Store, http: HttpClientFactory = default_http):
         self.settings = settings
         self.store = store
+        self.astore = AsyncStore(store)  # all I/O off the event loop
         store.caps = {**STORE_CAPS, **store.caps}
         self.upstreams = {idp.name: UpstreamClient(idp, http) for idp in settings.idps}
 
     # --- client registration (RFC 7591) ------------------------------------
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        data = self.store.get("client", client_id)
+        data = await self.astore.get("client", client_id)
         return OAuthClientInformationFull.model_validate(data) if data else None
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        validate_client_metadata(client_info)
         try:
-            self.store.put(
+            await self.astore.put(
                 "client",
                 client_info.client_id,
                 client_info.model_dump(mode="json", exclude_none=True),
@@ -95,22 +127,24 @@ class BrokerOAuthProvider:
             )
         except StoreFull:
             raise RegistrationError("invalid_client_metadata", "Registration is temporarily unavailable") from None
-        log.info("registered OAuth client %s (%s)", client_info.client_id, client_info.client_name)
+        log.info("registered OAuth client %s (%r)", client_info.client_id, (client_info.client_name or "")[:MAX_CLIENT_NAME])
 
     # --- authorization -----------------------------------------------------
 
     async def authorize(self, client: OAuthClientInformationFull, params: AuthorizationParams) -> str:
         if params.resource and params.resource.rstrip("/") != self.settings.resource_url:
             raise AuthorizeError("invalid_target", f"This server only issues tokens for {self.settings.resource_url}")
+        if not await self.astore.hit(f"authorize:{client.client_id}", *AUTHORIZE_PER_CLIENT):
+            raise AuthorizeError("temporarily_unavailable", "Too many sign-in attempts for this app; try again shortly")
         txn = secrets.token_urlsafe(32)
         try:
-            self._put_pending(txn, client, params)
+            await self._put_pending(txn, client, params)
         except StoreFull:
             raise AuthorizeError("temporarily_unavailable", "Too many sign-ins in progress; try again shortly") from None
         return f"{self.settings.public_url}/login?txn={txn}"
 
-    def _put_pending(self, txn: str, client: OAuthClientInformationFull, params: AuthorizationParams) -> None:
-        self.store.put(
+    async def _put_pending(self, txn: str, client: OAuthClientInformationFull, params: AuthorizationParams) -> None:
+        await self.astore.put(
             "pending",
             txn,
             {
@@ -121,6 +155,7 @@ class BrokerOAuthProvider:
                 "code_challenge": params.code_challenge,
                 "state": params.state,
                 "scopes": params.scopes or [SCOPE],
+                "expires_at": time.time() + PENDING_TTL,
             },
             PENDING_TTL,
             capped=True,
@@ -129,7 +164,7 @@ class BrokerOAuthProvider:
     async def load_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: str
     ) -> GrantAuthorizationCode | None:
-        data = self.store.get("code", digest(authorization_code))
+        data = await self.astore.get("code", digest(authorization_code))
         if not data or data["client_id"] != client.client_id:
             return None
         return GrantAuthorizationCode(code=authorization_code, **data)
@@ -137,9 +172,9 @@ class BrokerOAuthProvider:
     async def exchange_authorization_code(
         self, client: OAuthClientInformationFull, authorization_code: GrantAuthorizationCode
     ) -> OAuthToken:
-        if not self.store.pop("code", digest(authorization_code.code)):  # single use
+        if not await self.astore.pop("code", digest(authorization_code.code)):  # single use
             raise TokenError("invalid_grant", "authorization code already used or expired")
-        return self._issue(
+        return await self._issue(
             client.client_id,
             authorization_code.scopes,
             authorization_code.subject or "",
@@ -152,14 +187,14 @@ class BrokerOAuthProvider:
 
     async def load_refresh_token(self, client: OAuthClientInformationFull, refresh_token: str) -> GrantRefreshToken | None:
         key = digest(refresh_token)
-        data = self.store.get("refresh", key)
+        data = await self.astore.get("refresh", key)
         if not data:
             # Reuse of a rotated-out refresh token means it leaked (OAuth 2.1 §4.3.1 / RFC 9700):
             # kill the whole session for both the attacker and the legitimate client.
-            used = self.store.get("refresh_used", key)
+            used = await self.astore.get("refresh_used", key)
             if used:
                 log.warning("refresh token reuse detected; revoking grant for %s", used.get("subject"))
-                self.store.revoke_grant(used["grant_id"])
+                await self.astore.revoke_grant(used["grant_id"])
             return None
         if data["client_id"] != client.client_id:
             return None
@@ -169,17 +204,17 @@ class BrokerOAuthProvider:
         self, client: OAuthClientInformationFull, refresh_token: GrantRefreshToken, scopes: list[str]
     ) -> OAuthToken:
         key = digest(refresh_token.token)
-        data = self.store.pop("refresh", key)  # rotation: old token dies
+        data = await self.astore.pop("refresh", key)  # rotation: old token dies
         if not data:
             raise TokenError("invalid_grant", "refresh token already used or expired")
-        self.store.put(
+        await self.astore.put(
             "refresh_used",
             key,
             {"grant_id": data["grant_id"], "subject": data["subject"]},
             self.settings.refresh_token_ttl,
             data["grant_id"],
         )
-        return self._issue(
+        return await self._issue(
             client.client_id,
             scopes or data["scopes"],
             data["subject"],
@@ -190,7 +225,7 @@ class BrokerOAuthProvider:
 
     # --- tokens --------------------------------------------------------------
 
-    def _issue(
+    async def _issue(
         self, client_id: str, scopes: list[str], subject: str, claims: dict[str, Any], grant_id: str, auth_time: float
     ) -> OAuthToken:
         s = self.settings
@@ -198,7 +233,7 @@ class BrokerOAuthProvider:
         # Absolute session lifetime: rotation never extends a sign-in past max_session_lifetime.
         remaining = int(auth_time + s.max_session_lifetime - now)
         if remaining <= 0:
-            self.store.revoke_grant(grant_id)
+            await self.astore.revoke_grant(grant_id)
             raise TokenError("invalid_grant", "session expired; sign in again")
         access_ttl, refresh_ttl = min(s.access_token_ttl, remaining), min(s.refresh_token_ttl, remaining)
         access, refresh = secrets.token_urlsafe(32), secrets.token_urlsafe(48)
@@ -210,17 +245,17 @@ class BrokerOAuthProvider:
             "grant_id": grant_id,
             "claims": claims,
         }
-        self.store.put("access", digest(access), {**common, "expires_at": now + access_ttl}, access_ttl, grant_id)
-        self.store.put(
+        await self.astore.put("access", digest(access), {**common, "expires_at": now + access_ttl}, access_ttl, grant_id)
+        await self.astore.put(
             "refresh", digest(refresh), {**common, "expires_at": now + refresh_ttl, "auth_time": auth_time}, refresh_ttl, grant_id
         )
-        self.store.extend("client", client_id, refresh_ttl)  # active clients outlive the unused-registration TTL
+        await self.astore.extend("client", client_id, refresh_ttl)  # active clients outlive the unused-registration TTL
         return OAuthToken(access_token=access, expires_in=access_ttl, scope=" ".join(scopes), refresh_token=refresh)
 
     async def load_access_token(self, token: str) -> AccessToken | None:
         if key_token := api_key_access_token(self.settings, token):
             return key_token
-        data = self.store.get("access", digest(token))
+        data = await self.astore.get("access", digest(token))
         if not data:
             return None
         claims = {**data.pop("claims", {}), "iss": self.settings.public_url}
@@ -229,7 +264,7 @@ class BrokerOAuthProvider:
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         grant_id = getattr(token, "grant_id", None)
         if grant_id:
-            self.store.revoke_grant(grant_id)
+            await self.astore.revoke_grant(grant_id)
 
 
 # --- Login / consent pages and the upstream callback ------------------------
@@ -269,7 +304,7 @@ def _error(message: str, status: int = 400) -> HTMLResponse:
 
 
 def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
-    settings, store = provider.settings, provider.store
+    settings, astore = provider.settings, provider.astore
     secure_cookie = settings.public_url.startswith("https://")
 
     def callback_url(name: str) -> str:
@@ -286,14 +321,16 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
     async def login(request: Request) -> Response:
         """Consent page. Binds the pending sign-in to this browser via a SameSite cookie."""
         txn = request.query_params.get("txn", "")
-        pending = store.get("pending", txn)
+        pending = await astore.get("pending", txn)
         if not pending:
             return expired()
         cookie = request.cookies.get(BROWSER_COOKIE) or secrets.token_urlsafe(32)
         pending["browser"] = digest(cookie)
-        store.put("pending", txn, pending, PENDING_TTL)
+        # Keep the original expiry: revisiting the consent page must not extend a pending sign-in.
+        await astore.put("pending", txn, pending, max(1.0, pending.get("expires_at", time.time() + PENDING_TTL) - time.time()))
         client = html.escape(pending["client_name"] or "An MCP client")
-        host = html.escape(urlparse(pending["redirect_uri"]).netloc or pending["redirect_uri"])
+        parsed_redirect = urlparse(pending["redirect_uri"])
+        host = html.escape(parsed_redirect.hostname or parsed_redirect.scheme + ":")
         buttons = "".join(
             f'<form method="post" action="/login/{name}"><input type="hidden" name="txn" value="{html.escape(txn)}">'
             f'<button class="btn" type="submit">Continue with {html.escape(up.idp.display_name)}</button></form>'
@@ -321,7 +358,7 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
         form = await request.form()
         txn = str(form.get("txn", ""))
         upstream = provider.upstreams.get(name)
-        pending = store.get("pending", txn)
+        pending = await astore.get("pending", txn)
         if not upstream or not pending:
             return expired()
         browser = browser_id(request)
@@ -330,7 +367,7 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
         state = secrets.token_urlsafe(32)
         verifier, challenge = pkce_pair()
         try:
-            store.put("upstream", state, {"txn": txn, "provider": name, "verifier": verifier, "browser": browser}, PENDING_TTL, capped=True)
+            await astore.put("upstream", state, {"txn": txn, "provider": name, "verifier": verifier, "browser": browser}, PENDING_TTL, capped=True)
             url = await upstream.authorize_url(callback_url(name), state, challenge)
         except StoreFull:
             return _error("Too many sign-ins in progress. Please try again shortly.", 503)
@@ -343,7 +380,7 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
     async def callback(request: Request) -> Response:
         name = request.path_params["provider"]
         q = request.query_params
-        ctx = store.pop("upstream", q.get("state", ""))
+        ctx = await astore.pop("upstream", q.get("state", ""))
         if not ctx or ctx["provider"] != name:
             return _error("Invalid or expired sign-in state. Start again from your AI app.")
         if ctx.get("browser") != browser_id(request):
@@ -351,12 +388,12 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
             return _error("Please finish the sign-in in the same browser you started it in.", 403)
         if q.get("error"):
             return _error(f"Sign-in was cancelled or refused ({q.get('error')}).")
-        pending = store.pop("pending", ctx["txn"])
+        pending = await astore.pop("pending", ctx["txn"])
         if not pending:
             return expired()
         try:
             ident = await provider.upstreams[name].identity(q.get("code", ""), callback_url(name), ctx["verifier"])
-            check_access(settings, ident.email, ident.email_verified)
+            check_access(settings, ident.email, ident.email_verified, hosted_domain=ident.hosted_domain, provider=name)
         except LoginError as exc:
             log.warning("sign-in refused via %s: %s", name, exc)
             return _error(str(exc), 403)
@@ -365,7 +402,7 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
             return _error("The identity provider could not be reached. Please try again.", 502)
 
         code = secrets.token_urlsafe(32)
-        store.put(
+        await astore.put(
             "code",
             digest(code),
             {
@@ -382,7 +419,7 @@ def register_login_routes(mcp: Any, provider: BrokerOAuthProvider) -> None:
             },
             CODE_TTL,
         )
-        log.info("sign-in ok: %s via %s for client %s", ident.email or ident.subject, name, pending["client_id"])
+        log.info("sign-in ok: %s via %s for client %s", ident.subject, name, pending["client_id"])
         response = RedirectResponse(
             construct_redirect_uri(pending["redirect_uri"], code=code, state=pending["state"]),
             status_code=302,

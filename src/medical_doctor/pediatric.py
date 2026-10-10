@@ -73,9 +73,15 @@ def pediatric_vital_signs(
             flags.append(f"Hypothermia {temperature_c:g}°C — in infants can signal sepsis")
     if spo2 is not None and spo2 < 92:
         flags.append(f"Hypoxemia: SpO2 {spo2:g}% (<92%)")
-    emergency = any(f.startswith(("HYPOTENSION", "Bradycardia")) or "EMERGENCY" in f for f in flags) or (
-        spo2 is not None and spo2 < 90
-    )
+    svt = 220 if age_years < 1 else 180
+    hypotensive = systolic_bp is not None and systolic_bp < hypo
+    hypoxemic = spo2 is not None and spo2 < 90
+    severe_brady = heart_rate is not None and heart_rate < 60 and age_years < 12
+    if heart_rate is not None and heart_rate > svt:
+        flags.append(f"HR {heart_rate:g} > {svt}: possible SVT or shock — EMERGENCY")
+    # Bradycardia is an emergency when profound (<60 in a child, the PALS CPR threshold with poor
+    # perfusion) or with hypotension/hypoxemia; mild bradycardia in a fit adolescent is common.
+    emergency = hypotensive or hypoxemic or severe_brady or any("EMERGENCY" in f for f in flags)
     interp = "EMERGENCY: " if emergency else ("Abnormal: " if flags else "Within PALS normal ranges for age. ")
     interp += "; ".join(flags) if flags else "Interpret with the child's appearance, work of breathing and circulation."
     return _result(
@@ -98,7 +104,7 @@ def estimated_weight_by_age(age_years: float) -> dict[str, Any]:
     if age_years < 1:
         months = age_years * 12
         w, formula = 0.5 * months + 4, "(0.5 × age in months) + 4"
-    elif age_years <= 5:
+    elif age_years < 6:
         w, formula = 2 * age_years + 8, "(2 × age) + 8"
     else:
         w, formula = 3 * age_years + 7, "(3 × age) + 7"
@@ -133,6 +139,12 @@ def weight_based_dose(
     if max_single_dose_mg is not None and raw > max_single_dose_mg:
         dose = max_single_dose_mg
         warnings.append(f"Calculated {raw:g} mg exceeds max single dose; capped at {max_single_dose_mg:g} mg")
+    if max_daily_dose_mg is not None and not doses_per_day:
+        raise ValueError("doses_per_day is required when max_daily_dose_mg is given (to check the daily total)")
+    if concentration_mg_per_ml is not None and concentration_mg_per_ml <= 0:
+        raise ValueError("concentration_mg_per_ml must be positive")
+    if doses_per_day is not None and doses_per_day <= 0:
+        raise ValueError("doses_per_day must be positive")
     daily = dose * doses_per_day if doses_per_day else None
     if daily is not None and max_daily_dose_mg is not None and daily > max_daily_dose_mg:
         dose = max_daily_dose_mg / doses_per_day
@@ -163,7 +175,9 @@ def maintenance_fluids_holliday_segar(weight_kg: float) -> dict[str, Any]:
     w = weight_kg
     per_day = 100 * min(w, 10) + 50 * min(max(w - 10, 0), 10) + 20 * max(w - 20, 0)
     per_hour = 4 * min(w, 10) + 2 * min(max(w - 10, 0), 10) + 1 * max(w - 20, 0)
+    formula_per_day = per_day
     per_hour = min(per_hour, 120)  # common adult cap
+    per_day = min(per_day, 120 * 24)  # keep the daily figure consistent with the hourly cap
     return _result(
         "Maintenance fluids (Holliday-Segar)",
         round(per_hour, 1),
@@ -173,6 +187,7 @@ def maintenance_fluids_holliday_segar(weight_kg: float) -> dict[str, Any]:
         "Holliday MA, Segar WE. Pediatrics 1957;19:823; Feld LG et al. AAP Clinical Practice Guideline, Pediatrics 2018;142:e20183083",
         units="mL/h",
         ml_per_day=round(per_day),
+        formula_ml_per_day=round(formula_per_day),
     )
 
 

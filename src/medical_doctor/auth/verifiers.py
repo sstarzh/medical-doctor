@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import time
 from typing import Any
 
 import anyio
@@ -64,10 +65,19 @@ class JwtVerifier:
         self.audience = settings.jwt_audience or settings.resource_url
         self._jwks = jwks_client
         self._jwks_url = settings.jwt_jwks_url
+        self._discovery_retry_at = 0.0
 
     def _client(self) -> Any:
         if self._jwks is None:
-            url = self._jwks_url or self._discover_jwks_url()
+            # Back off after a failed discovery so unauthenticated garbage tokens cannot keep
+            # tying up worker threads with outbound discovery requests.
+            if time.time() < self._discovery_retry_at:
+                raise RuntimeError("JWKS discovery temporarily unavailable")
+            try:
+                url = self._jwks_url or self._discover_jwks_url()
+            except Exception:
+                self._discovery_retry_at = time.time() + 60
+                raise
             self._jwks = jwt.PyJWKClient(url, cache_keys=True, lifespan=3600)
         return self._jwks
 

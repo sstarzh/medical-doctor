@@ -102,3 +102,25 @@ def test_pediatric_red_flags(text, flag, urgency):
 @pytest.mark.parametrize("text", ["child has a mild runny nose", "my son has a tummy ache after dinner", "teething and drooling a lot"])
 def test_pediatric_routine(text):
     assert screen(text).urgency == "routine"
+
+
+def test_weight_dose_daily_max_requires_frequency():
+    with pytest.raises(ValueError):
+        p.weight_based_dose(20, 15, max_daily_dose_mg=200)
+    with pytest.raises(ValueError):
+        p.weight_based_dose(20, 15, concentration_mg_per_ml=0)
+
+
+def test_apls_age_5_to_6_uses_preschool_formula():
+    assert p.estimated_weight_by_age(5.5)["value"] == 19.0
+
+
+def test_pals_svt_and_bradycardia_escalation():
+    assert p.pediatric_vital_signs(0.5, heart_rate=250)["interpretation"].startswith("EMERGENCY")
+    assert not p.pediatric_vital_signs(15, heart_rate=55)["interpretation"].startswith("EMERGENCY")
+    assert p.pediatric_vital_signs(3, heart_rate=50)["interpretation"].startswith("EMERGENCY")
+
+
+def test_holliday_segar_daily_matches_hourly_cap():
+    r = p.maintenance_fluids_holliday_segar(100)
+    assert r["value"] == 120 and r["ml_per_day"] == 2880 and r["formula_ml_per_day"] == 3100

@@ -5,7 +5,7 @@ Two services split the work:
 - **Vercel** runs the MCP server as one serverless function at `https://<project>.vercel.app/mcp`.
 - **Supabase Postgres** stores the sign-in data: app registrations, tokens, and per-user consult counters. This data has to survive across Vercel's short-lived, autoscaled instances.
 
-No patient or consult text is ever stored. The database holds only hashed tokens, OAuth client registrations, and each user's email and name.
+Consult text is never stored. The database holds hashed tokens, OAuth client registrations and each user's email and name. If `MEDICAL_DOCTOR_DATA_KEYS` is set, it also holds the patient charts users choose to keep. Those are encrypted per patient with AES-256-GCM before they reach Supabase, and only opaque IDs and timestamps are stored in clear.
 
 ## 1. Supabase
 
@@ -44,6 +44,8 @@ GitHub, Microsoft, and company SSO work the same way, using `/oauth/callback/git
 | `POSTGRES_URL` | set by the Supabase integration, or the pooler URI from step 1 |
 | `MEDICAL_DOCTOR_EFFORT` | `medium`, recommended on the Hobby plan (see the time limit below) |
 | `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | e.g. `20`, to cap spend per user |
+| `MEDICAL_DOCTOR_DATA_KEYS` | from `medical-doctor-mcp gen-data-key k1`; enables the encrypted patient record (stored in the same Supabase database). Keep a copy in your secret manager: without it the records are unreadable. |
+| `OPENAI_API_KEY` / `LLAMA_API_KEY` | optional: other model providers and the `second_opinion` panel |
 | `MEDICAL_DOCTOR_PUBLIC_URL` | only with a custom domain, e.g. `https://doctor.example.com`; it defaults to your production `*.vercel.app` URL |
 
 3. Deploy. Then confirm:

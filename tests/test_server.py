@@ -5,6 +5,7 @@ import pytest
 from mcp import Client
 
 from medical_doctor import physician
+from medical_doctor.llm.anthropic_engine import AnthropicEngine
 from medical_doctor.server import mcp
 
 
@@ -47,7 +48,7 @@ async def test_skill_tool_and_resource():
 
 
 async def test_consult_without_credentials_returns_protocol(monkeypatch):
-    monkeypatch.setattr(physician, "has_credentials", lambda: False)
+    monkeypatch.setattr(physician, "credentials_for", lambda provider: False)
     async with Client(mcp) as client:
         r = await client.call_tool("consult", {"case": "45F, crushing chest pain for 1 hour"})
         p = _payload(r)
@@ -97,9 +98,9 @@ async def test_consult_runs_tool_loop(monkeypatch):
     original = physician.run_consult
 
     async def patched(**kw):
-        return await original(client=fake, **kw)
+        return await original(**{**kw, "engine": AnthropicEngine(client=fake)})
 
-    monkeypatch.setattr(physician, "has_credentials", lambda: True)
+    monkeypatch.setattr(physician, "credentials_for", lambda provider: True)
     monkeypatch.setattr(physician, "run_consult", patched)
     async with Client(mcp) as client:
         r = await client.call_tool("consult", {"case": "40M wants weight advice", "audience": "patient"})
@@ -110,10 +111,11 @@ async def test_consult_runs_tool_loop(monkeypatch):
     # second request carried the tool result computed by the real calculator
     tool_result = fake.calls[1]["messages"][-1]["content"][0]
     assert tool_result["tool_use_id"] == "tu_1" and '"value": 27.8' in tool_result["content"]
+    assert tool_result["content"].startswith('<tool_output tool="calc_bmi" trust="untrusted">')
     # consult tool is never offered to the inner model (no recursion)
     names = {t.get("name") for t in fake.calls[0]["tools"]}
     assert "consult" not in names and "calc_bmi" in names
-    assert fake.calls[0]["model"] == physician.MODEL
+    assert fake.calls[0]["model"] == "claude-opus-5-5"
     # skill library is in the cached system prompt
     assert fake.calls[0]["system"][-1]["cache_control"] == {"type": "ephemeral"}
 
@@ -123,9 +125,9 @@ async def test_consult_handles_refusal(monkeypatch):
     original = physician.run_consult
 
     async def patched(**kw):
-        return await original(client=fake, **kw)
+        return await original(**{**kw, "engine": AnthropicEngine(client=fake)})
 
-    monkeypatch.setattr(physician, "has_credentials", lambda: True)
+    monkeypatch.setattr(physician, "credentials_for", lambda provider: True)
     monkeypatch.setattr(physician, "run_consult", patched)
     async with Client(mcp) as client:
         p = _payload(await client.call_tool("consult", {"case": "x"}))
@@ -154,11 +156,17 @@ async def test_search_and_fetch(monkeypatch):
         assert (await client.call_tool("fetch", {"id": "nope:1"})).is_error
 
 
-async def test_all_tools_are_read_only_annotated():
-    # ChatGPT treats tools without readOnlyHint as write actions that need confirmation.
+async def test_tool_annotations_are_accurate():
+    # ChatGPT treats tools without readOnlyHint as write actions that need confirmation, so every
+    # read tool must say so; tools that change the chart must NOT claim to be read-only.
+    writes = {"patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update",
+              "draft_prescription", "draft_referral"}
+    destructive = {"patient_delete_item", "patient_erase"}
     async with Client(mcp) as client:
         for t in (await client.list_tools()).tools:
-            assert t.annotations and t.annotations.read_only_hint, t.name
+            assert t.annotations is not None, t.name
+            assert t.annotations.read_only_hint == (t.name not in writes), t.name
+            assert bool(t.annotations.destructive_hint) == (t.name in destructive), t.name
 
 
 async def test_consult_reports_progress(monkeypatch):
@@ -174,22 +182,24 @@ async def test_consult_reports_progress(monkeypatch):
             seen.append(message)
             await inner(step, message)
 
-        return await original(**{**kw, "progress": spy}, client=fake)
+        return await original(**{**kw, "progress": spy, "engine": AnthropicEngine(client=fake)})
 
-    monkeypatch.setattr(physician, "has_credentials", lambda: True)
+    monkeypatch.setattr(physician, "credentials_for", lambda provider: True)
     monkeypatch.setattr(physician, "run_consult", patched)
     async with Client(mcp) as client:
         await client.call_tool("consult", {"case": "x"})
     assert seen[0].startswith("Attending") and "calc_bmi" in seen[1]
 
 
-def test_rate_limiter():
+async def test_rate_limiter():
     from mcp.server.mcpserver.exceptions import ToolError
 
     from medical_doctor.server import RateLimiter
 
     rl = RateLimiter(2)
-    rl.check("a"), rl.check("a"), rl.check("b")
+    await rl.check("a")
+    await rl.check("a")
+    await rl.check("b")
     with pytest.raises(ToolError):
-        rl.check("a")
-    RateLimiter(0).check("a")  # unlimited
+        await rl.check("a")
+    await RateLimiter(0).check("a")  # unlimited
