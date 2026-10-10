@@ -138,8 +138,10 @@ class PostgresStore:
         with self.pool.connection() as conn, conn.transaction():
             conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (bucket,))
             (count,) = conn.execute(
-                "SELECT COUNT(*) FROM medical_doctor.kv WHERE kind = 'rate' AND key >= %s AND key < %s AND expires_at >= %s",
-                (bucket + "|", bucket + "}", now),
+                # starts_with is an exact prefix match; a text range (key >= 'b|' AND key < 'b}') would
+                # depend on the database collation (en_US.UTF-8 on Supabase sorts punctuation differently).
+                "SELECT COUNT(*) FROM medical_doctor.kv WHERE kind = 'rate' AND starts_with(key, %s) AND expires_at >= %s",
+                (bucket + "|", now),
             ).fetchone()
             if count >= limit:
                 return False
