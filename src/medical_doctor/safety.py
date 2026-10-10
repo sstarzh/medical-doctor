@@ -394,6 +394,126 @@ RULES: tuple[RedFlagRule, ...] = (
         ),
         "Same-day evaluation; emergency services if breathless at rest, chest pain, or collapse.",
     ),
+    # --- specialty emergencies (found by the specialty vignettes in evals/cases.yaml) ---
+    RedFlagRule(
+        "severe_skin_reaction",
+        "Possible Stevens-Johnson syndrome / toxic epidermal necrolysis or other severe skin emergency",
+        "emergency",
+        (
+            r"stevens[- ]johnson|toxic\s+epidermal\s+necrolysis|\bSJS\b|\bTEN\b(?=\s)",
+            r"(?:blister\w*|peeling|sloughing|dusky)[^.]{0,100}(?:mouth|lips?|eyes?|genital\w*|mucos\w*)",
+            r"(?:sores?|ulcers?|erosions?)\s+in\s+(?:the\s+)?(?:mouth|eyes?)[^.]{0,80}(?:rash|blister|skin|fever)",
+        ),
+        CALL_EMS + " Stop any recently started medicine only on medical advice, and bring the medicine list.",
+    ),
+    RedFlagRule(
+        "electrolyte_emergency",
+        "Dangerous potassium or sodium level",
+        "emergency",
+        (
+            r"\b(?:potassium|k\+?)\s*(?:level\s*)?(?:of|is|was|=|:)?\s*(?:[6-9](?:\.\d+)?|1\d(?:\.\d+)?)\s*(?:mmol|meq|mm)",
+            r"\b(?:potassium|k\+?)\s*(?:level\s*)?(?:of|is|was|=|:)\s*(?:[6-9](?:\.\d+)?)\b",
+            r"\bsevere\s+hyperkal\w*|\bhyperkal\w*[^.]{0,40}(?:ecg|ekg|peaked|arrhythm)",
+            r"\b(?:sodium|na\+?)\s*(?:level\s*)?(?:of|is|was|=|:)?\s*(?:1[01]\d|12[0-4])\s*(?:mmol|meq)",
+        ),
+        "Same-hour emergency care: an ECG and urgent blood tests are needed.",
+    ),
+    RedFlagRule(
+        "giant_cell_arteritis",
+        "Possible giant cell arteritis (risk of permanent blindness)",
+        "emergency",
+        (
+            r"(?:jaw\s+(?:pain|claudication)|pain\s+in\s+(?:the|my|his|her)\s+jaw\s+when\s+chewing|scalp\s+tender\w*|temporal\s+(?:arteritis|headache))"
+            r"[^.]{0,250}(?:vision|blind\w*|sight|double)",
+            r"(?:giant\s+cell|temporal)\s+arteritis",
+        ),
+        "Same-day emergency assessment; high-dose steroids are often started before tests to protect vision.",
+    ),
+    RedFlagRule(
+        "jaw_claudication",
+        "Possible giant cell arteritis",
+        "urgent",
+        (r"jaw\s+claudication|pain\s+in\s+(?:the|my|his|her)\s+jaw\s+when\s+chewing|scalp\s+tender\w*[^.]{0,60}headache",),
+        "Same-day assessment with ESR/CRP; steroids may be needed before biopsy.",
+    ),
+    RedFlagRule(
+        "hot_joint",
+        "Hot swollen joint (septic arthritis until proven otherwise)",
+        "urgent",
+        (
+            r"(?:hot|red|warm)\b[^.]{0,30}swollen[^.]{0,50}(?:knee|joint|hip|ankle|elbow|shoulder|wrist)",
+            r"swollen[^.]{0,30}(?:hot|red|warm)\b[^.]{0,40}(?:knee|joint|hip|ankle|elbow|shoulder|wrist)",
+            r"septic\s+arthritis",
+        ),
+        "Same-day assessment: joint aspiration before antibiotics if possible.",
+    ),
+    RedFlagRule(
+        "neutropenic_fever",
+        "Fever during chemotherapy (possible neutropenic sepsis)",
+        "emergency",
+        (
+            rf"(?:chemo\w*|chemotherapy|neutropeni\w*)[^.]{{0,150}}(?:{FEVER}|chills|rigors)",
+            rf"(?:{FEVER}|chills|rigors)[^.]{{0,100}}(?:chemo\w*|chemotherapy)",
+        ),
+        "Go to the emergency department now: antibiotics are needed within an hour. Tell them you are on chemotherapy.",
+    ),
+    RedFlagRule(
+        "urinary_retention",
+        "Acute urinary retention",
+        "emergency",
+        (
+            r"(?:can'?t|cannot|unable\s+to|not\s+been\s+able\s+to|haven'?t\s+been\s+able\s+to)\s+(?:pass\s+(?:urine|water)|urinate|pee|void)",
+        ),
+        "Emergency care today for a catheter; check medicines that cause retention (antihistamines, anticholinergics, opioids).",
+        negatable=False,  # the finding is itself phrased negatively ("has not been able to pass urine")
+    ),
+    RedFlagRule(
+        "urinary_retention_named",
+        "Acute urinary retention",
+        "emergency",
+        (r"urinary\s+retention",),
+        "Emergency care today for a catheter; check medicines that cause retention (antihistamines, anticholinergics, opioids).",
+    ),
+    RedFlagRule(
+        "deep_neck_infection",
+        "Possible airway-threatening throat infection (abscess, epiglottitis)",
+        "emergency",
+        (
+            # Drooling alone is normal in babies (teething); it matters with throat/airway context.
+            r"\bdrool\w*[^.]{0,60}(?:swallow\w*|sore\s+throat|throat\s+pain|stridor|voice|neck\s+swelling|tripod)",
+            r"(?:swallow\w*|sore\s+throat|throat\s+pain|stridor|voice|neck\s+swelling)[^.]{0,60}\bdrool\w*",
+            r"can'?t\s+swallow\s+(?:my|his|her|their)?\s*(?:own\s+)?(?:saliva|spit)",
+            r"muffled\s+voice|hot\s+potato\s+voice|\btrismus\b",
+            r"(?:can\s+barely|can'?t|cannot|unable\s+to)\s+open\s+(?:his|her|my|their|the)\s+mouth",
+            r"\bepiglottitis\b|peritonsillar\s+abscess|\bquinsy\b|ludwig",
+        ),
+        CALL_EMS + " Sit upright; do not lie flat or try to look in the throat.",
+    ),
+    RedFlagRule(
+        "sudden_hearing_loss",
+        "Sudden hearing loss",
+        "urgent",
+        (
+            r"sudden(?:ly)?\s+[^.]{0,30}(?:hearing\s+loss|deaf\w*|lost\s+(?:the\s+|my\s+|his\s+|her\s+)?hearing|can'?t\s+hear)",
+            r"(?:woke|waking|woken)\s+up\s+with\s+[^.]{0,40}hearing\s+loss",
+        ),
+        "Hearing test and treatment within days: steroids work best when started early.",
+    ),
+    RedFlagRule(
+        "eye_emergency",
+        "Eye emergency (angle-closure glaucoma, retinal detachment, chemical injury)",
+        "emergency",
+        (
+            r"halos?\s+around\s+(?:the\s+)?lights",
+            r"(?:painful|severe(?:ly)?\s+painful|severe\s+pain)[^.]{0,30}red[^.]{0,20}eye[^.]{0,120}(?:blurr\w*|vomit\w*|nause\w*)",
+            r"angle[- ]closure",
+            r"(?:curtain|shadow|veil)\s+[^.]{0,60}(?:vision|sight|eye)",
+            r"flash\w*[^.]{0,80}floaters|(?:new|shower\s+of)\s+floaters",
+            r"retinal\s+detachment",
+            r"(?:chemical|bleach|acid|alkali|lye|oven\s+cleaner|drain\s+cleaner)[^.]{0,40}(?:in|into)\s+(?:my\s+|his\s+|her\s+|their\s+|the\s+)?eyes?",
+        ),
+        "Same-hour eye care / emergency department. For chemicals: rinse the eye with running water for 15-30 minutes first.",
+    ),
     RedFlagRule(
         "cauda_equina",
         "Possible cauda equina syndrome",

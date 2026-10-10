@@ -39,6 +39,17 @@ CANT_MISS: dict[str, tuple[str, ...]] = {
     "airway_breathing": ("airway", "respiratory failure", "hypox"),
     "hypoglycemia": ("hypoglyc",),
     "bilious_vomiting": ("volvulus", "malrotation", "intussuscep", "obstruct"),
+    "severe_skin_reaction": ("stevens", "sjs", "epidermal necrolysis", "ten", "dress", "drug reaction"),
+    "electrolyte_emergency": ("hyperkal", "hyponatr", "potassium", "sodium"),
+    "giant_cell_arteritis": ("giant cell", "temporal arteritis", "gca"),
+    "jaw_claudication": ("giant cell", "temporal arteritis", "gca"),
+    "hot_joint": ("septic arthritis", "infect"),
+    "neutropenic_fever": ("neutropen",),
+    "urinary_retention": ("retention",),
+    "urinary_retention_named": ("retention",),
+    "deep_neck_infection": ("abscess", "epiglottitis", "airway", "ludwig"),
+    "sudden_hearing_loss": ("sensorineural", "sudden hearing"),
+    "eye_emergency": ("glaucoma", "angle", "retinal", "detachment", "chemical"),
 }
 
 _NEGATING = re.compile(r"\b(avoid|not|no|never|contraindicat\w*|allerg\w*|instead of|rather than|do not|don't)\b", re.I)

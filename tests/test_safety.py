@@ -161,3 +161,39 @@ def test_eval_gap_rules_have_sane_negation_and_tiers():
     assert screen("her period is late but no pain or bleeding").urgency == "routine"
     r = screen("periumbilical pain moving to the right lower quadrant with fever")
     assert r.urgency == "urgent" and "acute_abdomen" in {h.id for h in r.hits}
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("started lamotrigine, now painful blisters on the chest and sores in the mouth", "severe_skin_reaction"),
+    ("potassium 6.8 mmol/L today", "electrolyte_emergency"),
+    ("sodium of 118 mmol/L and confused", "electrolyte_emergency"),
+    ("jaw claudication and scalp tenderness, now blurred vision in one eye", "giant_cell_arteritis"),
+    ("on chemotherapy, last cycle 9 days ago, temperature of 38.3 C", "neutropenic_fever"),
+    ("has not been able to pass urine for 12 hours", "urinary_retention"),
+    ("muffled voice and drooling, can barely open his mouth", "deep_neck_infection"),
+    ("halos around lights and a painful red eye", "eye_emergency"),
+    ("flashing lights and new floaters, then a curtain over my vision", "eye_emergency"),
+    ("splashed bleach into my eye", "eye_emergency"),
+])
+def test_specialty_emergencies(text, flag):
+    r = screen(text)
+    assert r.urgency == "emergency" and flag in {h.id for h in r.hits}, (text, r.to_dict())
+
+
+@pytest.mark.parametrize("text,flag", [
+    ("hot swollen right knee since yesterday", "hot_joint"),
+    ("woke up with sudden hearing loss in the right ear", "sudden_hearing_loss"),
+    ("pain in the jaw when chewing for two weeks", "jaw_claudication"),
+])
+def test_specialty_urgent(text, flag):
+    r = screen(text)
+    assert r.urgency == "urgent" and flag in {h.id for h in r.hits}
+
+
+@pytest.mark.parametrize("text", [
+    "potassium 4.2 mmol/L, sodium 139 mmol/L", "no drooling, swallowing fine", "denies flashes or floaters",
+    "finished chemotherapy two years ago, no fever", "no urinary retention, voiding normally",
+    "mole on my back, no blisters", "denies jaw claudication", "teething and drooling a lot",
+])
+def test_specialty_rules_do_not_false_alarm(text):
+    assert screen(text).urgency == "routine", screen(text).to_dict()
