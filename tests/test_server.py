@@ -117,7 +117,7 @@ async def test_consult_runs_tool_loop(monkeypatch):
     assert "consult" not in names and "calc_bmi" in names
     assert fake.calls[0]["model"] == "claude-opus-5-5"
     # skill library is in the cached system prompt
-    assert fake.calls[0]["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert fake.calls[0]["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
 async def test_consult_handles_refusal(monkeypatch):

@@ -263,6 +263,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         patient_id: Annotated[str | None, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")] = None,
         provider: Literal["anthropic", "openai", "meta", "llama"] | None = None,
         second_opinion: bool = False,
+        depth: Literal["quick", "standard", "thorough"] | None = None,
     ) -> dict[str, Any]:
         """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
         pediatrics, incl. neonates and adolescents). Give the whole case: age (days/months for infants), weight
@@ -274,7 +275,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
         personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
-        their notes, listing disagreements. Takes 30 s to a few minutes.
+        their notes, listing disagreements. depth: 'quick' (fastest; fewer tool rounds, no web search — good for
+        triage and simple questions), 'standard' (default), or 'thorough' (most verification; slowest). Every depth
+        keeps the red-flag screen, urgency floor and citation check. Takes ~20 s (quick) to a few minutes (thorough).
         Result: `note` (Markdown), `structured` (urgency — never below the red-flag screen —, differential with
         can't-miss flags, evaluation, management, drafts, missing information, citations) and `citation_check`
         (each PMID looked up in PubMed: verified / mismatch / not_found / unchecked)."""
@@ -310,7 +313,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             except Exception:  # progress is best-effort (client may not send a progress token)
                 pass
 
-        engine = physician.make_engine(settings, chosen)
+        engine = physician.make_engine(settings, chosen, depth)
         started = time.monotonic()
         with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(patient_id),
                                                              "medical_doctor.second_opinion": second_opinion}) as span:
@@ -326,7 +329,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 progress=progress,
                 engine=engine,
                 second_opinion=second_opinion,
+                depth=depth,
             )
+            result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER

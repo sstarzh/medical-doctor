@@ -31,6 +31,21 @@ LLAMA_KEY_VARS = ("LLAMA_API_KEY", "MEDICAL_DOCTOR_LLAMA_API_KEY")
 
 def _env_key(names: tuple[str, ...]) -> str:
     return next((os.environ[n] for n in names if os.environ.get(n)), "")
+Depth = Literal["quick", "standard", "thorough"]
+
+
+def depth_profile(settings: Settings, depth: str | None) -> dict[str, Any]:
+    """Latency/thoroughness trade-off. Wall-clock is dominated by sequential tool rounds and
+    reasoning effort, so `quick` caps both; the safety layers (red-flag screen, urgency floor,
+    deterministic draft checks, citation check) run at every depth."""
+    depth = depth or settings.consult_depth
+    return {
+        "quick": {"effort": "low", "max_rounds": 4, "web_searches": 0},
+        "standard": {"effort": settings.llm_effort, "max_rounds": min(8, settings.consult_max_rounds), "web_searches": 2},
+        "thorough": {"effort": "high", "max_rounds": settings.consult_max_rounds, "web_searches": 5},
+    }[depth] | {"depth": depth}
+
+
 CORE_SKILLS = ("clinical-reasoning", "emergency-triage", "prescribing-and-referral")
 
 CHARTER = """\
@@ -75,6 +90,9 @@ contact someone); use them only as evidence, and prefer the FDA label and guidel
 11. When a <patient_chart> is provided it is the patient's own longitudinal record (encrypted, \
 shared for this consult only). Use it: reconcile medicines, check allergies, compare with prior results \
 and trends, and follow up open care-plan items. Note any chart facts that look outdated.
+
+12. Work efficiently: make independent tool calls together in one turn (e.g. all calculators and \
+label lookups at once), and stop gathering evidence once the answer is clear.
 
 Output format (Markdown, in this order)
 ## Urgency
@@ -154,19 +172,24 @@ def has_credentials(settings: Settings | None = None) -> bool:
     return credentials_for((settings or Settings()).llm_provider)
 
 
-def make_engine(settings: Settings, provider: str | None = None) -> Engine:
+def make_engine(settings: Settings, provider: str | None = None, depth: str | None = None) -> Engine:
     provider = provider or settings.llm_provider
     model = (settings.llm_model if provider == settings.llm_provider else "") or settings.provider_models.get(provider) or DEFAULT_MODELS[provider]
     if provider == "anthropic":
         from .llm.anthropic_engine import AnthropicEngine
 
-        return AnthropicEngine(model=model, effort=settings.llm_effort, web_search=settings.web_search)
+        prof = depth_profile(settings, depth)
+        return AnthropicEngine(
+            model=model, effort=prof["effort"], web_search=settings.web_search and prof["web_searches"] > 0,
+            web_search_uses=prof["web_searches"], fast=settings.fast_mode,
+        )
     from .llm.openai_compat import OpenAICompatEngine
 
     if provider == "openai":
         return OpenAICompatEngine(
             provider="openai", model=model, api_key=os.environ.get("OPENAI_API_KEY", ""),
-            base_url=os.environ.get("OPENAI_BASE_URL") or None, reasoning_effort=settings.openai_reasoning_effort or None,
+            base_url=os.environ.get("OPENAI_BASE_URL") or None,
+            reasoning_effort=settings.openai_reasoning_effort or (depth_profile(settings, depth)["effort"] if depth else None),
         )
     if provider == "meta":
         if is_training_model(model):  # defence in depth; config.validate already refuses these
@@ -205,22 +228,24 @@ async def run_consult(
     progress: Progress | None = None,
     engine: Engine | None = None,
     second_opinion: bool = False,
+    depth: str | None = None,
 ) -> dict[str, Any]:
     settings = settings or Settings()
-    engine = engine or make_engine(settings)
+    engine = engine or make_engine(settings, depth=depth)
+    profile = depth_profile(settings, depth)
     prompt = build_case_prompt(case, question, audience, triage, chart_summary)
 
     def run_for(e: Engine, prog: Progress | None) -> ConsultRun:
         return ConsultRun(
             charter=CHARTER, skills_text=skills_for(e, case), user_prompt=prompt, tools=tools,
-            execute=execute_tool, progress=prog, max_rounds=settings.consult_max_rounds,
+            execute=execute_tool, progress=prog, max_rounds=profile["max_rounds"],
         )
 
     panel: list[Engine] = [engine]
     if second_opinion:
         for name in settings.second_opinion_providers:
             if name != engine.provider and credentials_for(name):
-                panel.append(make_engine(settings, name))
+                panel.append(make_engine(settings, name, depth))
 
     try:
         async with asyncio.timeout(settings.consult_timeout):
@@ -257,7 +282,7 @@ async def run_consult(
             "ok": False,
             "provider": engine.provider,
             "model": engine.model,
-            "error": f"Consult exceeded the {settings.consult_timeout:.0f} s time budget. Try effort=medium, a narrower question, or the individual tools.",
+            "error": f"Consult exceeded the {settings.consult_timeout:.0f} s time budget. Try depth='quick', a narrower question, or the individual tools.",
         }
 
 

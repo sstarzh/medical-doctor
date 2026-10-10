@@ -36,7 +36,7 @@ It has five layers:
 | `draft_prescription` / `draft_referral` | Drafts for a licensed clinician, with deterministic safety checks and patient- and clinician-facing calls to action |
 | `care_plan_update` | Track drafts and follow-ups (accepted, completed, declined) |
 
-`consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
+`consult` takes optional `depth` (`quick` / `standard` / `thorough`, trading speed for verification), `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
 
 The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
 
@@ -199,7 +199,9 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_SECOND_OPINION` | – | Providers on the second-opinion panel, e.g. `anthropic,openai,meta` |
 | `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
-| `MEDICAL_DOCTOR_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max` (use `max` for the hardest cases) |
+| `MEDICAL_DOCTOR_CONSULT_DEPTH` | `standard` | Default consult depth: `quick` (~4 tool rounds, low effort, no web search), `standard` (8 rounds, 2 guideline searches), `thorough` (12 rounds, high effort, 5 searches). Callers can override per consult with `depth`. |
+| `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max` |
+| `MEDICAL_DOCTOR_FAST_MODE` | `0` | `1` turns on Claude fast mode (about 2.5x faster output at 2x the token price; Claude API only). Falls back to standard speed automatically when fast mode is rate-limited. |
 | `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |
 | `MEDICAL_DOCTOR_VERIFY_CITATIONS` | `1` | Check every PMID in consult notes against PubMed |
 | `LOG_FORMAT` | `text` (`json` on Vercel) | `json` for one JSON object per log line |

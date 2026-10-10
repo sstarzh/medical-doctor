@@ -62,7 +62,9 @@ class Settings:
     # Consult model providers
     llm_provider: str = "anthropic"  # anthropic | openai | meta | llama
     llm_model: str = ""  # empty = provider default
-    llm_effort: str = "high"
+    llm_effort: str = "medium"  # effort for depth="standard"
+    fast_mode: bool = False  # Claude fast mode: ~2.5x faster output at 2x price (Claude API only)
+    consult_depth: str = "standard"  # quick | standard | thorough
     provider_models: dict[str, str] = field(default_factory=dict)  # per-provider model overrides
     second_opinion_providers: tuple[str, ...] = ()
     openai_reasoning_effort: str = ""
@@ -193,7 +195,9 @@ def load_settings() -> Settings:
         allow_unauthenticated=_flag("MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED"),
         llm_provider=e("MEDICAL_DOCTOR_PROVIDER", "anthropic").strip().lower(),
         llm_model=e("MEDICAL_DOCTOR_MODEL", ""),
-        llm_effort=e("MEDICAL_DOCTOR_EFFORT", "high"),
+        llm_effort=e("MEDICAL_DOCTOR_EFFORT", "medium"),
+        fast_mode=_flag("MEDICAL_DOCTOR_FAST_MODE"),
+        consult_depth=e("MEDICAL_DOCTOR_CONSULT_DEPTH", "standard").strip().lower(),
         provider_models={
             k: v for k, v in {
                 "anthropic": e("MEDICAL_DOCTOR_ANTHROPIC_MODEL", ""),
@@ -236,6 +240,8 @@ def is_training_model(model: str) -> bool:
 
 
 def validate(s: Settings) -> None:
+    if s.consult_depth not in ("quick", "standard", "thorough"):
+        raise ValueError("MEDICAL_DOCTOR_CONSULT_DEPTH must be quick, standard or thorough")
     for p in (s.llm_provider, *s.second_opinion_providers):
         if p not in PROVIDERS:
             raise ValueError(f"Unknown model provider {p!r}: use {', '.join(PROVIDERS)}")

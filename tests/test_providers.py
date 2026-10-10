@@ -151,7 +151,7 @@ async def test_second_opinion_panel_synthesizes(monkeypatch):
     primary = StubEngine("anthropic", "Claude note: likely pneumonia")
     other = StubEngine("openai", "GPT note: consider PE")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
     res = await physician.run_consult(
         case="cough", question=None, audience="clinician", triage={"urgency": "routine"}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("anthropic", "openai")), engine=primary, second_opinion=True,
@@ -165,7 +165,7 @@ async def test_panel_falls_back_when_primary_fails(monkeypatch):
     primary = StubEngine("anthropic", "", ok=False)
     other = StubEngine("meta", "Llama note")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
     res = await physician.run_consult(
         case="x", question=None, audience="clinician", triage={}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("meta",)), engine=primary, second_opinion=True,
@@ -247,3 +247,55 @@ def test_vercel_without_auth_refused(monkeypatch):
     monkeypatch.delenv("MEDICAL_DOCTOR_AUTH", raising=False)
     with pytest.raises(ValueError, match="without authentication"):
         load_settings()
+
+
+# --- consult depth and fast mode ------------------------------------------------------
+
+
+def test_depth_profiles_trade_rounds_and_effort():
+    s = Settings()
+    quick, std, deep = (physician.depth_profile(s, d) for d in ("quick", "standard", "thorough"))
+    assert quick["effort"] == "low" and quick["web_searches"] == 0 and quick["max_rounds"] < std["max_rounds"] <= deep["max_rounds"]
+    assert std["effort"] == "medium" and deep["effort"] == "high"
+    e = physician.make_engine(s, "anthropic", "quick")
+    assert e.effort == "low" and not e.web_search
+    assert physician.depth_profile(Settings(consult_depth="thorough"), None)["depth"] == "thorough"
+    with pytest.raises(ValueError, match="DEPTH"):
+        validate(Settings(consult_depth="instant"))
+
+
+async def test_fast_mode_requests_and_falls_back_to_standard_speed():
+    import anthropic
+    import httpx2
+
+    from medical_doctor.llm.anthropic_engine import AnthropicEngine
+
+    class Stream:
+        def __init__(self, msg):
+            self.msg = msg
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get_final_message(self):
+            return self.msg
+
+    calls = []
+    done = SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="note")], model="claude-opus-5-5",
+                           usage=SimpleNamespace(input_tokens=1, output_tokens=1, cache_read_input_tokens=0))
+
+    def stream(**kw):
+        calls.append(kw)
+        if kw.get("speed") == "fast":
+            req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+            raise anthropic.RateLimitError("fast mode rate limited", response=httpx2.Response(429, request=req), body=None)
+        return Stream(done)
+
+    fake = SimpleNamespace(beta=SimpleNamespace(messages=SimpleNamespace(stream=stream)))
+    e = AnthropicEngine(client=fake, fast=True, web_search=False)
+    out = await e.consult(_run(echo))
+    assert out.ok and calls[0]["speed"] == "fast" and "fast-mode-2026-02-01" in calls[0]["betas"]
+    assert "speed" not in calls[1] and "fast-mode-2026-02-01" not in calls[1]["betas"]
