@@ -30,6 +30,7 @@ It has five layers:
 | `search` / `fetch` | Search across skills, calculators, and PubMed, then read a result (the convention ChatGPT connectors and deep research use) |
 | `whoami` | Shows the signed-in account, to confirm a connector works |
 | `patient_create` / `patient_list` / `patient_chart` / `patient_update` / `patient_delete_item` | The personal-doctor chart for you and family members (encrypted, private to the account) |
+| `my_chart` / `chart_record` | Load the patient's chart at the start of a conversation (opens one on the first visit), and save everything they mention (merged, not duplicated) |
 | `ehr_connect` | Connects a patient portal (Epic MyChart, Oracle Health, athenahealth, any SMART on FHIR server) and imports the records |
 | `patient_import_fhir` | Imports records from a hospital, clinic or health-app FHIR R4 export (conditions, medications, allergies, labs, vitals, immunizations, procedures, family history). Re-importing updates entries instead of duplicating them. |
 | `patient_export` / `patient_erase` / `patient_access_log` | FHIR R4 export, permanent erasure (crypto-shredding), and a tamper-evident access log |
@@ -53,6 +54,12 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 
 ## Personal doctor: the patient record
 
+- **Automatic memory.** The chart is the doctor's memory of each person, and the server maintains it rather than leaving it to the client model.
+  - **First visit:** a `self` profile is opened automatically.
+  - **Every consult:** the chart is loaded, and afterwards every fact the patient stated is saved together with a dated visit note. Facts about the same medicine, allergy or condition update the existing entry instead of duplicating it.
+  - **Between consults:** `my_chart` loads the chart at the start of a conversation, and `chart_record` saves anything the patient mentions.
+  - **Family members:** a consult about someone else (e.g. a child) is not filed in the user's own chart. Create their profile and pass its `patient_id`.
+  - **Turning it off:** set `MEDICAL_DOCTOR_AUTO_CHART=0` to save only on request.
 - **What it holds.** One account can hold up to 20 profiles (yourself, children, parents). Each has demographics, pregnancy and lactation, weight, allergies with reactions, medications, conditions, immunizations, procedures, family and social history, observations (vitals and labs), visit notes, and a care plan.
 - **Owner.** The owner is the signed-in identity, a hash of issuer plus subject, and never a tool argument. Shared API keys can't own charts; only keys labelled `person:<name>` can.
 - **Encryption.** Each patient has its own AES-256-GCM data key, wrapped by the key-encryption key in `MEDICAL_DOCTOR_DATA_KEYS`. Every record is bound to its row (owner, patient, section, item), so a copied ciphertext won't decrypt elsewhere. Only opaque IDs and timestamps are stored in clear.
