@@ -24,11 +24,13 @@ It has five layers:
 | `drug_interaction_check` | Pairwise screen built from each drug's FDA label interaction section |
 | `normalize_drug` | Maps brand or misspelled names to RxNorm ingredients |
 | `pubmed_search` / `pubmed_abstract` | Literature search, optionally limited to systematic reviews, RCTs, and guidelines |
+| `verify_citations` | Checks every PMID in a text against PubMed (verified, mismatch, not found, unchecked) and flags links outside recognised guideline and journal publishers |
 | `clinical_trials_search` | Recruiting trials from ClinicalTrials.gov |
-| `list_skills` / `get_skill` | The specialty playbooks |
+| `list_skills` / `get_skill` | The specialty playbooks, with review freshness and outdated guideline editions |
 | `search` / `fetch` | Search across skills, calculators, and PubMed, then read a result (the convention ChatGPT connectors and deep research use) |
 | `whoami` | Shows the signed-in account, to confirm a connector works |
 | `patient_create` / `patient_list` / `patient_chart` / `patient_update` / `patient_delete_item` | The personal-doctor chart for you and family members (encrypted, private to the account) |
+| `patient_import_fhir` | Imports records from a hospital, clinic or health-app FHIR R4 export (conditions, medications, allergies, labs, vitals, immunizations, procedures, family history). Re-importing updates entries instead of duplicating them. |
 | `patient_export` / `patient_erase` / `patient_access_log` | FHIR R4 export, permanent erasure (crypto-shredding), and a tamper-evident access log |
 | `preventive_care_due` | Screenings, vaccines, and counseling due by age, sex, and risk (USPSTF A/B, CDC/ACIP, AAP Bright Futures) |
 | `draft_prescription` / `draft_referral` | Drafts for a licensed clinician, with deterministic safety checks and patient- and clinician-facing calls to action |
@@ -37,6 +39,16 @@ It has five layers:
 `consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
 
 The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
+
+### What `consult` returns
+
+- **`note`**: the Markdown consult note.
+- **`structured`**: the same note as validated data (`ConsultSummary`).
+  - Fields: urgency, problem representation, differential (likelihood, %, can't-miss flag), evaluation, management, drafts, missing information, return precautions, citations.
+  - `urgency` is never lower than the deterministic red-flag screen; the model's own call stays in `model_urgency`.
+  - If the model omits the block, `source` reads `markdown_fallback`.
+- **`citation_check`**: every PMID in the note looked up in PubMed and marked `verified`, `mismatch` (a real article on a different topic), `not_found`, or `unchecked`. PubMed being unreachable is never counted as verified.
+- **Also returned:** `red_flag_screen`, `tool_calls`, `usage`, and, for a second opinion, `panel`.
 
 ## Personal doctor: the patient record
 
@@ -47,6 +59,7 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 - **Erasure.** Destroying the patient's data key makes every copy, including backups, unreadable.
 - **Audit.** Every read and write goes to a hash-chained audit table; `patient_access_log` reports whether the chain is intact. Clinical text is never logged.
 - **Where it's stored.** Locally (stdio), the chart lives in `~/.medical-doctor/records.db` with an auto-created key file. On servers it lives in Postgres (Supabase), in the `medical_doctor` schema with RLS on.
+- **Importing from hospitals.** Download records as FHIR (patient portals' "download my records", Apple Health / Health Connect exports, or a SMART on FHIR `Patient/$everything`) and call `patient_import_fhir`. Imported demographics only fill blanks; entries the user entered are never overwritten. A bundle with more than one patient is refused. Live SMART on FHIR sign-in to an EHR is on the roadmap.
 - **Sharing with a model.** A chart is sent to a model only when you pass `patient_id` to `consult`, and only as a minimal clinical summary.
 
 ## Model providers: Claude, OpenAI, Meta Muse Spark, Llama
@@ -188,6 +201,11 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
 | `MEDICAL_DOCTOR_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max` (use `max` for the hardest cases) |
 | `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |
+| `MEDICAL_DOCTOR_VERIFY_CITATIONS` | `1` | Check every PMID in consult notes against PubMed |
+| `LOG_FORMAT` | `text` (`json` on Vercel) | `json` for one JSON object per log line |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | – | Export traces over OTLP (needs `pip install '.[otel]'`) |
+| `MODEL_API_KEY`, `MEDICAL_DOCTOR_META_MODEL` | – / `muse-spark-1.3` | Meta Model API key and model; `*-contributor` models are refused |
+| `MEDICAL_DOCTOR_LLAMA_BASE_URL` | – | Required for the `llama` provider (OpenAI-compatible Llama host) |
 | `MEDICAL_DOCTOR_MAX_TOOL_ROUNDS` | `12` | Upper bound on tool calls per consult |
 | `MEDICAL_DOCTOR_SKILLS_DIR` | bundled | Use your own or extended skill library |
 | `NCBI_API_KEY`, `OPENFDA_API_KEY` | – | Optional; raise rate limits |
@@ -206,23 +224,46 @@ The consult uses the server-side refusal fallback (`fallbacks: "default"`). If a
 ```
 case ─► red_flag_screen (regex, negation-aware) ─┐
                                                  ▼
-        Claude Opus 5.5 (Med-Peds attending) + charter + 20 skills (cached)
+        Claude / OpenAI / Muse Spark / Llama (Med-Peds attending) + charter + 22 skills
                 │  tool loop: calc_* (adult + pediatric) · drug_label · interactions · PubMed · trials · web search (guidelines)
                 ▼
         consult note: Urgency → Problem representation → Differential (⚠️ can't-miss)
                       → Evaluation → Management (cited) → What would change it
-                      → Patient explanation → Evidence → disclaimer
+                      → Patient explanation → Evidence → disclaimer + JSON summary
+                │
+                ▼
+        structured summary (validated; urgency floor = red-flag screen) + PubMed citation check
 ```
+
+## Quality: evals, citations, guideline freshness, observability
+
+- **Clinical evals.** [`evals/cases.yaml`](evals/cases.yaml) holds 24 adult and pediatric vignettes (ACS, stroke, SAH, PE, sepsis, ectopic, febrile neonate, Kawasaki, croup, and others).
+  - Each vignette sets expected screen urgency, urgency bounds, diagnoses to consider, can't-miss diagnoses that must be flagged, required tools, and unsafe phrases.
+  - `medical-doctor-mcp eval` runs the deterministic screen on all of them (in CI on every push).
+  - `medical-doctor-mcp eval --consult --provider openai` runs real consults and scores the structured output. A case fails outright on under-triage, an unflagged can't-miss diagnosis, or a fabricated citation.
+  - The **Clinical evals** workflow runs this on demand per provider and uploads the report.
+- **Guideline freshness.** Every skill carries `metadata.last_reviewed`, `review_interval_days`, and `clinical_review`. Overdue skills are flagged to the model inside the consult prompt.
+  - `medical-doctor-mcp check-freshness` lists review status and cited guideline editions more than 5 years old.
+  - A monthly workflow opens an issue when skills fall overdue.
+  - All skills are `clinical_review: pending` until a licensed clinician signs them off.
+- **Observability.**
+  - **Logs:** JSON on Vercel or with `LOG_FORMAT=json`.
+  - **Request IDs:** every request gets one (`X-Request-Id`, echoed back and stamped on every log line).
+  - **Per-tool timing and outcome:** logged for every tool call.
+  - **Consult metrics:** provider, model, urgency, tokens, rounds, citation results, duration.
+  - **Tracing:** the MCP SDK's OpenTelemetry spans plus a `consult` span. Install `.[otel]` and set `OTEL_EXPORTER_OTLP_ENDPOINT` to export them to Honeycomb, Grafana, Datadog, Langfuse and others.
+  - **No PHI:** logs and spans never contain tool arguments, results, or clinical text.
 
 ## Extending
 
-- **New skill:** add `skills/<name>/SKILL.md` with `name` (it must match the folder name) and `description` frontmatter. The server, Claude Code, and OpenClaw all pick it up.
+- **New skill:** add `skills/<name>/SKILL.md` with `name` (it must match the folder name), `description` and `metadata.last_reviewed` frontmatter. The server, Claude Code, and OpenClaw all pick it up.
 - **New calculator:** add a function to `calculators.py`, register it in `CALCULATORS`, and add a test with a published reference value.
 - **New data source:** add an async function in `sources.py` and a tool in `server.py`.
 
 ## CI and code review
 
-- **`.github/workflows/ci.yml`** runs the test suite on Python 3.11, 3.12, and 3.13 for every pull request and every push to `main`.
+- **`.github/workflows/ci.yml`** runs the test suite (with Postgres) and the red-flag screen evals on Python 3.11, 3.12, and 3.13 for every pull request and every push to `main`.
+- **`.github/workflows/evals.yml`** (manual) runs full consult evals on a chosen provider. **`guideline-freshness.yml`** (monthly) checks skill review dates.
 - **`.github/workflows/claude-code-review.yml`**: Claude reviews every pull request and posts inline comments.
 - **`.github/workflows/claude.yml`**: mention `@claude` in an issue or PR comment to ask questions or request changes.
 

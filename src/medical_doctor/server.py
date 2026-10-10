@@ -48,7 +48,8 @@ Workflow for any health question:
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
 4. `search` / `fetch` find and read skills, calculators and PubMed articles.
 5. Personal doctor: the user can keep an encrypted chart for themselves and family members
-   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`). Pass `patient_id` to `consult`
+   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`, or `patient_import_fhir` for records
+   exported from a hospital or health app). Pass `patient_id` to `consult`
    so the attending sees the history. Use the `personal_doctor_visit` / `patient_intake` prompts.
 6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
    presented as calls to action — never as prescriptions or orders.

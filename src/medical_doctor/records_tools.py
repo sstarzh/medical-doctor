@@ -28,7 +28,7 @@ PatientId = Annotated[str, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")]
 
 # Tools that write or erase patient data are never offered to the consult model.
 RECORD_WRITE_TOOLS = {
-    "patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update",
+    "patient_create", "patient_update", "patient_delete_item", "patient_erase", "care_plan_update", "patient_import_fhir",
 }
 RECORD_TOOLS = RECORD_WRITE_TOOLS | {"patient_list", "patient_chart", "patient_export", "patient_access_log", "preventive_care_due"}
 
@@ -114,6 +114,18 @@ def register_record_tools(mcp: MCPServer, records: Records) -> None:
         s, p = svc()
         item = await run(s.upsert(p.owner, p.client_id, patient_id, section, data, item_id))
         return {"patient_id": patient_id, "section": section, "item_id": item}
+
+    @mcp.tool(annotations=WRITE, title="Import records (FHIR)")
+    async def patient_import_fhir(bundle: dict[str, Any] | list[dict[str, Any]], patient_id: PatientId | None = None) -> dict[str, Any]:
+        """Import health records exported from a hospital/clinic EHR or health app as FHIR R4 JSON (a Bundle, e.g.
+        from a patient portal "download my records", Apple Health / Health Connect FHIR export, or a SMART on FHIR
+        Patient/$everything): conditions, medications, allergies, labs and vitals, immunizations, procedures and
+        family history. Without patient_id a new profile is created from the Patient resource; with it, records
+        are added to that profile and demographics only fill blanks. Re-importing the same export updates entries
+        rather than duplicating them. Returns counts per section and every skipped resource with the reason.
+        Ask the user to review the imported chart afterwards."""
+        s, p = svc()
+        return await run(s.import_fhir(p.owner, p.client_id, bundle, patient_id))
 
     @mcp.tool(annotations=ERASE, title="Delete chart entry")
     async def patient_delete_item(patient_id: PatientId, section: Section, item_id: str) -> dict[str, Any]:

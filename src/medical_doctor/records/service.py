@@ -84,6 +84,38 @@ class PatientService:
             raise RecordsError(str(exc)) from None
         return item_id
 
+    async def import_fhir(
+        self, owner: str, client_id: str | None, payload: Any, patient_id: str | None = None
+    ) -> dict[str, Any]:
+        """Import a FHIR Bundle into a new or existing patient. Imported demographics only fill blanks:
+        what the user entered themselves is never overwritten."""
+        from .fhir_import import convert
+
+        try:
+            converted = convert(payload)
+        except ValueError as exc:
+            raise RecordsError(str(exc)) from None
+        profile = converted["profile"]
+        if patient_id is None:
+            patient_id = await self.create_patient(owner, client_id, profile)
+            created = True
+        else:
+            current = (await self.chart(owner, client_id, patient_id, purpose="import")).get("profile", {})
+            missing = {k: v for k, v in profile.items() if not current.get(k)}
+            if missing:
+                await self.upsert(owner, client_id, patient_id, "profile", missing, None)
+            created = False
+        counts: dict[str, int] = {}
+        failed: list[dict[str, str]] = []
+        for section, data, item_id, source in converted["items"]:
+            try:
+                await self.upsert(owner, client_id, patient_id, section, data, item_id)
+                counts[section] = counts.get(section, 0) + 1
+            except RecordsError as exc:
+                failed.append({"resource": source, "reason": str(exc)[:300]})
+        return {"patient_id": patient_id, "created_patient": created, "imported": counts,
+                "skipped": converted["skipped"], "failed": failed}
+
     async def delete_item(self, owner: str, client_id: str | None, patient_id: str, section: str, item_id: str) -> bool:
         if section not in LIST_SECTIONS:
             raise RecordsError("Only list sections support item deletion; update singletons instead")
