@@ -96,6 +96,16 @@ def visit_note(case: str, question: str | None, structured: dict[str, Any]) -> d
     return {"title": f"Consult: {title}", "text": "\n\n".join(parts)[:20000], "date": date.today().isoformat()}
 
 
+def reported_case(note_text: str) -> str:
+    """Only what the patient reported in a visit note: the text after 'Patient reported:' and before the
+    note's own conclusions (Question/Urgency/Differential/...). Used to keep a second opinion blinded."""
+    text = note_text.split("Patient reported:", 1)[-1]
+    for marker in ("\n\nQuestion:", "\n\nUrgency:", "\n\nDifferential:", "\n\nRecommended evaluation:",
+                   "\n\nManagement:", "\n\nReturn precautions:"):
+        text = text.split(marker, 1)[0]
+    return text.strip()
+
+
 class AutoChart:
     """Server-side chart memory: resolve (and on first visit open) the patient's chart before a consult,
     and save what the patient stated plus a visit note after it. The client model cannot forget to."""

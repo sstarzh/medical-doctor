@@ -144,10 +144,28 @@ async def test_second_opinion_defaults_to_the_last_consult_in_the_chart(monkeypa
         empty = await c.call_tool("second_opinion", {"patient_id": pid})
         assert empty.is_error and "Nothing to review" in empty.content[0].text
         await c.call_tool("patient_update", {"patient_id": pid, "section": "notes",
-                                             "data": {"title": "Consult: knee pain", "text": "Patient reported: knee pain. Plan: rest", "date": "2026-10-01"}})
+                                             "data": {"title": "Consult: knee pain", "date": "2026-10-01",
+                                                      "text": "Patient reported:\nknee pain after running\n\nUrgency: routine\n\n"
+                                                              "Differential: patellofemoral pain (likely)\n\nManagement: rest and ice"}})
         r = (await c.call_tool("second_opinion", {"patient_id": pid})).structured_content
         await c.call_tool("patient_erase", {"patient_id": pid, "confirm": "ERASE"})
-    assert r["ok"] and "Consult: knee pain" in rev.prompts[0] and "knee pain" in rev.consult_prompt
+    assert r["ok"] and "Consult: knee pain" in rev.prompts[0] and "knee pain after running" in rev.consult_prompt
+    for earlier in ("patellofemoral", "rest and ice", "Urgency: routine"):  # blinded to the earlier conclusions
+        assert earlier not in rev.consult_prompt and earlier in rev.prompts[0]
+
+
+async def test_second_opinion_needs_case_separately_from_prior_advice(monkeypatch):
+    from mcp import Client
+
+    from medical_doctor.server import mcp
+
+    monkeypatch.setattr(physician, "second_opinion_engine", lambda settings: Reviewer())
+    monkeypatch.setattr(physician, "credentials_for", lambda p: True)
+    async with Client(mcp) as c:
+        pid = (await c.call_tool("patient_create", {"profile": {"name": "Cy", "relationship": "other"}})).structured_content["patient_id"]
+        r = await c.call_tool("second_opinion", {"patient_id": pid, "prior_advice": "GP said IBS"})
+        await c.call_tool("patient_erase", {"patient_id": pid, "confirm": "ERASE"})
+    assert r.is_error and "Pass `case`" in r.content[0].text
 
 
 async def test_fresh_case_panel_uses_reviewer_when_no_other_provider(monkeypatch):

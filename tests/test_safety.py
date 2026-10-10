@@ -194,6 +194,11 @@ def test_specialty_urgent(text, flag):
     "potassium 4.2 mmol/L, sodium 139 mmol/L", "no drooling, swallowing fine", "denies flashes or floaters",
     "finished chemotherapy two years ago, no fever", "no urinary retention, voiding normally",
     "mole on my back, no blisters", "denies jaw claudication", "teething and drooling a lot",
+    "I have had a mild cough for ten days", "Ten days of sniffles",
 ])
 def test_specialty_rules_do_not_false_alarm(text):
     assert screen(text).urgency == "routine", screen(text).to_dict()
+
+
+def test_ten_acronym_still_flagged():
+    assert "severe_skin_reaction" in {h.id for h in screen("dermatology suspects TEN after a new drug").hits}

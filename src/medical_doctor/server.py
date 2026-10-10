@@ -29,6 +29,7 @@ from .records_tools import (
     AutoChart,
     Records,
     chart_suggestions,
+    reported_case,
     register_chart_memory_tools,
     register_order_tools,
     register_record_tools,
@@ -426,10 +427,16 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                             key=lambda n: n.get("date") or "")
             if visits:
                 prior_advice = f"{visits[-1]['title']} ({visits[-1].get('date', '')})\n{visits[-1]['text']}"
-                case = case or visits[-1]["text"]
+                # The blinded work-up gets only what the patient reported, never the earlier conclusions:
+                # neither from the case text nor from the chart summary's recent visits.
+                case = case or reported_case(visits[-1]["text"])
+                reviewed = visits[-1]
+                chart_data = {**chart_data, "notes": [n for n in chart_data.get("notes", []) if n is not reviewed]}
         if not prior_advice:
             raise ToolError("Nothing to review yet: pass prior_advice (what the patient was told) and the case details.")
-        case = case or prior_advice
+        if not case:
+            raise ToolError("Pass `case`: the patient's symptoms and history, separately from prior_advice, so the "
+                            "independent review is not anchored on the earlier conclusions.")
         reviewer = physician.second_opinion_engine(settings)
         if not physician.credentials_for(reviewer.provider):
             raise ToolError(f"No {reviewer.provider} credentials on the server for the second-opinion reviewer.")

@@ -400,7 +400,7 @@ RULES: tuple[RedFlagRule, ...] = (
         "Possible Stevens-Johnson syndrome / toxic epidermal necrolysis or other severe skin emergency",
         "emergency",
         (
-            r"stevens[- ]johnson|toxic\s+epidermal\s+necrolysis|\bSJS\b|\bTEN\b(?=\s)",
+            r"stevens[- ]johnson|toxic\s+epidermal\s+necrolysis|\bSJS\b|(?-i:\bTEN\b)(?=\s)",  # TEN only as the acronym, never "ten"
             r"(?:blister\w*|peeling|sloughing|dusky)[^.]{0,100}(?:mouth|lips?|eyes?|genital\w*|mucos\w*)",
             r"(?:sores?|ulcers?|erosions?)\s+in\s+(?:the\s+)?(?:mouth|eyes?)[^.]{0,80}(?:rash|blister|skin|fever)",
         ),
