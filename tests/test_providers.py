@@ -92,12 +92,15 @@ async def test_openai_engine_refusal_and_empty_note():
 def test_make_engine_per_provider(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setenv("LLAMA_API_KEY", "llm-test")
-    s = Settings(llm_provider="openai", provider_models={"meta": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"},
-                 llama_base_url="https://api.together.xyz/v1")
+    monkeypatch.setenv("MODEL_API_KEY", "meta-test")
+    s = Settings(llm_provider="openai", llama_base_url="https://api.together.xyz/v1")
     oa = physician.make_engine(s)
     assert oa.provider == "openai" and oa.model == "gpt-6-sol"
     meta = physician.make_engine(s, "meta")
-    assert meta.provider == "meta" and meta.model.startswith("meta-llama/") and "together" in str(meta.client.base_url)
+    assert meta.model == "muse-spark-1.3" and "api.meta.ai" in str(meta.client.base_url) and meta.client.api_key == "meta-test"
+    llama = physician.make_engine(s, "llama")
+    assert llama.model.startswith("meta-llama/") and "together" in str(llama.client.base_url)
+    assert physician.credentials_for("meta") and physician.credentials_for("llama")
     claude = physician.make_engine(Settings())
     assert claude.provider == "anthropic" and claude.model == "claude-opus-5-5"
 
@@ -105,6 +108,17 @@ def test_make_engine_per_provider(monkeypatch):
 def test_unknown_provider_rejected():
     with pytest.raises(ValueError, match="provider"):
         validate(Settings(llm_provider="gemini"))
+    with pytest.raises(ValueError, match="LLAMA_BASE_URL"):
+        validate(Settings(llm_provider="llama"))
+
+
+@pytest.mark.parametrize("over", [{"llm_provider": "meta", "llm_model": "muse-spark-1.3-contributor"},
+                                  {"provider_models": {"meta": "muse-spark-1.1-contributor"}}])
+def test_meta_contributor_models_refused_for_phi(over):
+    with pytest.raises(ValueError, match="contributor"):
+        validate(Settings(**over))
+    with pytest.raises(ValueError, match="contributor"):
+        physician.make_engine(Settings(**over), "meta")
 
 
 def test_smaller_models_get_relevant_skills_only():

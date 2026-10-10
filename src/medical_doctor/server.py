@@ -257,7 +257,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         question: Annotated[str | None, Field(max_length=5_000)] = None,
         audience: Literal["clinician", "patient", "caregiver"] = "clinician",
         patient_id: Annotated[str | None, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")] = None,
-        provider: Literal["anthropic", "openai", "meta"] | None = None,
+        provider: Literal["anthropic", "openai", "meta", "llama"] | None = None,
         second_opinion: bool = False,
     ) -> dict[str, Any]:
         """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
@@ -268,7 +268,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         can't-miss diagnoses, recommended workup, evidence-cited management, and a patient explanation.
         audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child.
         patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
-        personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta; default
+        personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
         their notes, listing disagreements. Takes 30 s to a few minutes."""
         try:

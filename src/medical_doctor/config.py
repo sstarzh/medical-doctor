@@ -60,13 +60,14 @@ class Settings:
     allowed_hosts: tuple[str, ...] = ()
     consult_limit_per_hour: int = 20
     # Consult model providers
-    llm_provider: str = "anthropic"  # anthropic | openai | meta
+    llm_provider: str = "anthropic"  # anthropic | openai | meta | llama
     llm_model: str = ""  # empty = provider default
     llm_effort: str = "high"
     provider_models: dict[str, str] = field(default_factory=dict)  # per-provider model overrides
     second_opinion_providers: tuple[str, ...] = ()
     openai_reasoning_effort: str = ""
-    llama_base_url: str = "https://api.llama.com/compat/v1/"
+    meta_base_url: str = "https://api.meta.ai/v1"  # Meta Model API (Muse Spark)
+    llama_base_url: str = ""  # any OpenAI-compatible open-weight Llama host (Together, Groq, vLLM, ...)
     web_search: bool = True
     consult_max_rounds: int = 12
     consult_timeout: float = 270.0  # under Vercel's 300 s function limit
@@ -196,12 +197,14 @@ def load_settings() -> Settings:
             k: v for k, v in {
                 "anthropic": e("MEDICAL_DOCTOR_ANTHROPIC_MODEL", ""),
                 "openai": e("MEDICAL_DOCTOR_OPENAI_MODEL", ""),
-                "meta": e("MEDICAL_DOCTOR_LLAMA_MODEL", ""),
+                "meta": e("MEDICAL_DOCTOR_META_MODEL", ""),
+                "llama": e("MEDICAL_DOCTOR_LLAMA_MODEL", ""),
             }.items() if v
         },
         second_opinion_providers=tuple(x.lower() for x in _list("MEDICAL_DOCTOR_SECOND_OPINION")),
         openai_reasoning_effort=e("MEDICAL_DOCTOR_OPENAI_REASONING_EFFORT", ""),
-        llama_base_url=e("MEDICAL_DOCTOR_LLAMA_BASE_URL", "https://api.llama.com/compat/v1/"),
+        meta_base_url=e("MEDICAL_DOCTOR_META_BASE_URL", "https://api.meta.ai/v1"),
+        llama_base_url=e("MEDICAL_DOCTOR_LLAMA_BASE_URL", ""),
         web_search=_flag("MEDICAL_DOCTOR_WEB_SEARCH", True),
         consult_max_rounds=int(e("MEDICAL_DOCTOR_MAX_TOOL_ROUNDS", "12")),
         consult_timeout=float(e("MEDICAL_DOCTOR_CONSULT_TIMEOUT", "270")),
@@ -222,10 +225,26 @@ def load_settings() -> Settings:
     return s
 
 
+PROVIDERS = ("anthropic", "openai", "meta", "llama")
+
+
+def is_training_model(model: str) -> bool:
+    """Meta Model API '*-contributor' models share traffic with Meta for product improvement."""
+    return "contributor" in model.lower()
+
+
 def validate(s: Settings) -> None:
     for p in (s.llm_provider, *s.second_opinion_providers):
-        if p not in ("anthropic", "openai", "meta"):
-            raise ValueError(f"Unknown model provider {p!r}: use anthropic, openai or meta")
+        if p not in PROVIDERS:
+            raise ValueError(f"Unknown model provider {p!r}: use {', '.join(PROVIDERS)}")
+        if p == "llama" and not s.llama_base_url:
+            raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL (an OpenAI-compatible Llama host)")
+    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items()]:
+        if p == "meta" and model and is_training_model(model):
+            raise ValueError(
+                f"Meta model {model!r} is a '-contributor' variant: Meta uses its traffic to improve its products, "
+                "so it must never receive patient data. Use the standard model ID (e.g. muse-spark-1.3)"
+            )
     if s.auth_mode == "none":
         return
     if not s.public_url:

@@ -1,8 +1,8 @@
-"""OpenAI and Meta Llama consult engine (OpenAI SDK, Chat Completions + function calling).
+"""OpenAI, Meta and Llama consult engine (OpenAI SDK, Chat Completions + function calling).
 
-Chat Completions is used because it is the one tool-calling API that OpenAI, Meta's Llama
-API (https://api.llama.com/compat/v1/) and every common Llama host (Together, Groq, Fireworks,
-vLLM, Bedrock's OpenAI-compatible endpoint) all implement.
+Chat Completions is used because it is the one tool-calling API that OpenAI, the Meta Model
+API (Muse Spark, https://api.meta.ai/v1) and every common open-weight Llama host (Together,
+Groq, Fireworks, vLLM, Bedrock's OpenAI-compatible endpoint) all implement.
 
 Capabilities compared with the Anthropic engine:
   * no server-side guideline web search — the model uses the PubMed/FDA/ClinicalTrials tools;

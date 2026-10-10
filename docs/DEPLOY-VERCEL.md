@@ -45,7 +45,7 @@ GitHub, Microsoft, and company SSO work the same way, using `/oauth/callback/git
 | `MEDICAL_DOCTOR_EFFORT` | `medium`, recommended on the Hobby plan (see the time limit below) |
 | `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | e.g. `20`, to cap spend per user |
 | `MEDICAL_DOCTOR_DATA_KEYS` | from `medical-doctor-mcp gen-data-key k1`; enables the encrypted patient record (stored in the same Supabase database). Keep a copy in your secret manager: without it the records are unreadable. |
-| `OPENAI_API_KEY` / `LLAMA_API_KEY` | optional: other model providers and the `second_opinion` panel |
+| `OPENAI_API_KEY` / `MODEL_API_KEY` (Meta) / `LLAMA_API_KEY` | optional: other model providers and the `second_opinion` panel |
 | `MEDICAL_DOCTOR_PUBLIC_URL` | only with a custom domain, e.g. `https://doctor.example.com`; it defaults to your production `*.vercel.app` URL |
 
 3. Deploy. Then confirm:

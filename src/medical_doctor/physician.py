@@ -1,7 +1,8 @@
 """Attending-physician consult orchestration: prompts, provider selection, panels, time budget.
 
 Providers (see llm/): Anthropic Claude (default; prompt caching, guideline web search, refusal
-fallbacks), OpenAI, and Meta Llama (Meta's Llama API or any OpenAI-compatible Llama host).
+fallbacks), OpenAI, Meta (Muse Spark via the Meta Model API), and open-weight Llama on any
+OpenAI-compatible host.
 """
 
 from __future__ import annotations
@@ -10,18 +11,25 @@ import asyncio
 import os
 from typing import Any, Literal
 
-from .config import Settings
+from .config import Settings, is_training_model
 from .llm.base import ConsultOutcome, ConsultRun, Engine, Progress, ToolExecutor
 from .skills import load_skills, select_skills, skill_library_text
 
 Audience = Literal["clinician", "patient", "caregiver"]
-Provider = Literal["anthropic", "openai", "meta"]
+Provider = Literal["anthropic", "openai", "meta", "llama"]
 
 DEFAULT_MODELS = {
     "anthropic": "claude-opus-5-5",
     "openai": "gpt-6-sol",
-    "meta": "Llama-4-Maverick-17B-128E-Instruct-FP8",
+    "meta": "muse-spark-1.3",
+    "llama": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
 }
+META_KEY_VARS = ("MODEL_API_KEY", "META_API_KEY", "MEDICAL_DOCTOR_META_API_KEY")
+LLAMA_KEY_VARS = ("LLAMA_API_KEY", "MEDICAL_DOCTOR_LLAMA_API_KEY")
+
+
+def _env_key(names: tuple[str, ...]) -> str:
+    return next((os.environ[n] for n in names if os.environ.get(n)), "")
 CORE_SKILLS = ("clinical-reasoning", "emergency-triage", "prescribing-and-referral")
 
 CHARTER = """\
@@ -134,7 +142,9 @@ def credentials_for(provider: str) -> bool:
     if provider == "openai":
         return bool(os.environ.get("OPENAI_API_KEY"))
     if provider == "meta":
-        return bool(os.environ.get("LLAMA_API_KEY") or os.environ.get("MEDICAL_DOCTOR_LLAMA_API_KEY"))
+        return bool(_env_key(META_KEY_VARS))
+    if provider == "llama":
+        return bool(_env_key(LLAMA_KEY_VARS))
     return False
 
 
@@ -157,11 +167,13 @@ def make_engine(settings: Settings, provider: str | None = None) -> Engine:
             base_url=os.environ.get("OPENAI_BASE_URL") or None, reasoning_effort=settings.openai_reasoning_effort or None,
         )
     if provider == "meta":
-        return OpenAICompatEngine(
-            provider="meta", model=model,
-            api_key=os.environ.get("LLAMA_API_KEY") or os.environ.get("MEDICAL_DOCTOR_LLAMA_API_KEY", ""),
-            base_url=settings.llama_base_url,
-        )
+        if is_training_model(model):  # defence in depth; config.validate already refuses these
+            raise ValueError(f"Refusing Meta '-contributor' model {model!r} for patient data")
+        return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url)
+    if provider == "llama":
+        if not settings.llama_base_url:
+            raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL")
+        return OpenAICompatEngine(provider="llama", model=model, api_key=_env_key(LLAMA_KEY_VARS), base_url=settings.llama_base_url)
     raise ValueError(f"Unknown provider {provider!r}")
 
 

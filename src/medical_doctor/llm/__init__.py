@@ -1,1 +1,1 @@
-"""Model providers behind the `consult` tool: Anthropic (default), OpenAI, and Meta Llama."""
+"""Model providers behind the `consult` tool: Anthropic (default), OpenAI, Meta (Muse Spark), and open-weight Llama."""

@@ -6,7 +6,7 @@ It has five layers:
 
 1. **A deterministic safety layer.** A red-flag screen catches emergencies such as cardiac arrest, stroke, ACS, sepsis, anaphylaxis, overdose, suicide risk, severe hypo- and hyperglycemia, obstetric and neonatal emergencies, and cauda equina. It handles negation and history ("no history of heart disease and now has chest pain" is still flagged). It runs before any model reasoning, works without an LLM, and is locked by a regression corpus of real phrasings.
 2. **Verified tools.** There are 29 validated clinical calculators (including MELD 3.0 and pediatric decision rules), plus live FDA drug labels, label-based interaction screening, RxNorm, PubMed, and ClinicalTrials.gov. The physician must compute scores and confirm doses with these tools instead of answering from memory.
-3. **The attending.** A dual-boarded **internal medicine + pediatrics (Med-Peds)** attending with a physician charter and 22 specialty **skills**. It produces a structured consult note: urgency, a ranked differential with can't-miss diagnoses, workup, evidence-cited management, and a plain-language explanation. It runs on **Claude (default), OpenAI, or Meta Llama**, and optionally on a **multi-model panel** that reconciles disagreements.
+3. **The attending.** A dual-boarded **internal medicine + pediatrics (Med-Peds)** attending with a physician charter and 22 specialty **skills**. It produces a structured consult note: urgency, a ranked differential with can't-miss diagnoses, workup, evidence-cited management, and a plain-language explanation. It runs on **Claude (default), OpenAI, Meta Muse Spark, or open-weight Llama**, and optionally on a **multi-model panel** that reconciles disagreements.
 4. **A personal health record.** Each account holds an encrypted chart for the user and family members: history, medicines, allergies, results, and notes. The attending reads it, follows up on open items, and suggests preventive care.
 5. **Calls to action, never orders.** Prescription and referral **drafts** (FHIR `MedicationRequest` / `ServiceRequest` with `status=draft`) are checked in code against the chart (allergy cross-reactivity, interactions, pregnancy, pediatric age and weight, Beers criteria, kidney function). Controlled substances are refused. A licensed clinician reviews and issues anything real.
 
@@ -34,7 +34,7 @@ It has five layers:
 | `draft_prescription` / `draft_referral` | Drafts for a licensed clinician, with deterministic safety checks and patient- and clinician-facing calls to action |
 | `care_plan_update` | Track drafts and follow-ups (accepted, completed, declined) |
 
-`consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
+`consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
 
 The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
 
@@ -49,15 +49,16 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 - **Where it's stored.** Locally (stdio), the chart lives in `~/.medical-doctor/records.db` with an auto-created key file. On servers it lives in Postgres (Supabase), in the `medical_doctor` schema with RLS on.
 - **Sharing with a model.** A chart is sent to a model only when you pass `patient_id` to `consult`, and only as a minimal clinical summary.
 
-## Model providers: Claude, OpenAI, Meta Llama
+## Model providers: Claude, OpenAI, Meta Muse Spark, Llama
 
 | Provider | Set | Default model | Notes |
 |---|---|---|---|
 | `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | Prompt-cached skill library, guideline web search (trusted publishers only), server-side refusal fallback |
 | `openai` | `OPENAI_API_KEY` | `gpt-6-sol` | Chat Completions function calling; optional `MEDICAL_DOCTOR_OPENAI_REASONING_EFFORT` |
-| `meta` | `LLAMA_API_KEY` | `Llama-4-Maverick-17B-128E-Instruct-FP8` | Meta's Llama API (`https://api.llama.com/compat/v1/`). Any OpenAI-compatible Llama host works through `MEDICAL_DOCTOR_LLAMA_BASE_URL`, e.g. Together, Groq, Fireworks, vLLM, or Bedrock. |
+| `meta` | `MODEL_API_KEY` (or `META_API_KEY`) | `muse-spark-1.3` | Meta Model API (`https://api.meta.ai/v1`, OpenAI-compatible). Also `muse-spark-1.2`, or `muse-spark-1.1` for 1M-token context. **`*-contributor` models are refused**: Meta uses their traffic to improve its products, so they must never see patient data. |
+| `llama` | `LLAMA_API_KEY` + `MEDICAL_DOCTOR_LLAMA_BASE_URL` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | Open-weight Llama on any OpenAI-compatible host: Together, Groq, Fireworks, vLLM, Bedrock. (Meta's own Llama API was retired in July 2026.) |
 
-- **Choosing a provider.** Pick the server default with `MEDICAL_DOCTOR_PROVIDER`. Override models per provider with `MEDICAL_DOCTOR_ANTHROPIC_MODEL`, `MEDICAL_DOCTOR_OPENAI_MODEL`, or `MEDICAL_DOCTOR_LLAMA_MODEL`. Model IDs differ between Llama hosts.
+- **Choosing a provider.** Pick the server default with `MEDICAL_DOCTOR_PROVIDER`. Override models per provider with `MEDICAL_DOCTOR_ANTHROPIC_MODEL`, `MEDICAL_DOCTOR_OPENAI_MODEL`, `MEDICAL_DOCTOR_META_MODEL`, or `MEDICAL_DOCTOR_LLAMA_MODEL`. Model IDs differ between Llama hosts.
 - **Same safety on every provider.** All providers use the same charter, tools, red-flag screen, deterministic checks, and time budget.
 - **Smaller context windows.** Models without large cached contexts get the most relevant skills instead of all 22.
 - **Second opinion.** Set `MEDICAL_DOCTOR_SECOND_OPINION=anthropic,openai,meta` and call `consult(..., second_opinion=true)`. Every configured model writes a note in parallel; the primary model then writes one reconciled note with an explicit **Points of disagreement** section, and never drops a can't-miss diagnosis that any model raised.
@@ -179,9 +180,9 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | Env var | Default | Meaning |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | – | Credentials for `consult` (an `ant auth login` profile also works) |
-| `MEDICAL_DOCTOR_PROVIDER` | `anthropic` | `anthropic` / `openai` / `meta` (see Model providers) |
+| `MEDICAL_DOCTOR_PROVIDER` | `anthropic` | `anthropic` / `openai` / `meta` / `llama` (see Model providers) |
 | `MEDICAL_DOCTOR_MODEL` | provider default | Model for the default provider |
-| `OPENAI_API_KEY`, `LLAMA_API_KEY` | – | Credentials for the OpenAI and Meta Llama providers |
+| `OPENAI_API_KEY`, `MODEL_API_KEY`, `LLAMA_API_KEY` | – | Credentials for the OpenAI, Meta and Llama providers |
 | `MEDICAL_DOCTOR_SECOND_OPINION` | – | Providers on the second-opinion panel, e.g. `anthropic,openai,meta` |
 | `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
