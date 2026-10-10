@@ -45,14 +45,18 @@ class AnthropicEngine:
         self,
         *,
         model: str = "claude-opus-5-5",
-        effort: str = "high",
+        effort: str = "medium",
         web_search: bool = True,
+        web_search_uses: int = 3,
+        fast: bool = False,
         request_timeout: float = 240.0,
         client: Any = None,
     ):
         self.model = model
         self.effort = effort
         self.web_search = web_search
+        self.web_search_uses = web_search_uses
+        self.fast = fast
         self.request_timeout = request_timeout
         self._client = client
 
@@ -61,7 +65,7 @@ class AnthropicEngine:
         return self._client or shared_client(self.request_timeout)
 
     def _common(self) -> dict[str, Any]:
-        return {
+        params: dict[str, Any] = {
             "model": self.model,
             "output_config": {"effort": self.effort},
             # Server-side refusal fallback: a declined clinical question is retried on Anthropic's
@@ -69,12 +73,26 @@ class AnthropicEngine:
             "betas": ["server-side-fallback-2026-07-01"],
             "fallbacks": "default",
         }
+        if self.fast:
+            params["betas"] = [*params["betas"], "fast-mode-2026-02-01"]
+            params["speed"] = "fast"
+        return params
+
+    async def _final_message(self, **kwargs: Any) -> Any:
+        """One streamed request. Fast mode has its own rate limit and is Claude-API-only: on a 429
+        or a rejection, drop to standard speed for the rest of this consult instead of failing."""
+        try:
+            async with self.client.beta.messages.stream(**kwargs, **self._common()) as stream:
+                return await stream.get_final_message()
+        except (anthropic.RateLimitError, anthropic.BadRequestError):
+            if not self.fast:
+                raise
+            self.fast = False
+            async with self.client.beta.messages.stream(**kwargs, **self._common()) as stream:
+                return await stream.get_final_message()
 
     async def complete(self, system: str, prompt: str, max_tokens: int = 8000) -> str:
-        async with self.client.beta.messages.stream(
-            max_tokens=max_tokens, system=system, messages=[{"role": "user", "content": prompt}], **self._common()
-        ) as stream:
-            msg = await stream.get_final_message()
+        msg = await self._final_message(max_tokens=max_tokens, system=system, messages=[{"role": "user", "content": prompt}])
         if msg.stop_reason == "refusal":
             raise RuntimeError("The model declined this request.")
         return "\n".join(b.text for b in msg.content if b.type == "text").strip()
@@ -82,15 +100,16 @@ class AnthropicEngine:
     async def consult(self, run: ConsultRun) -> ConsultOutcome:
         out = ConsultOutcome(
             ok=False, provider=self.provider, model=self.model,
-            capabilities=["tools", "parallel_tools", "prompt_cache", "refusal_fallback"] + (["guideline_web_search"] if self.web_search else []),
+            capabilities=["tools", "parallel_tools", "prompt_cache", "refusal_fallback"] + (["guideline_web_search"] if self.web_search else []) + (["fast_mode"] if self.fast else []),
         )
         tools: list[dict[str, Any]] = list(run.tools)
         if self.web_search:
-            tools.append({"type": "web_search_20260209", "name": "web_search", "max_uses": 5, "allowed_domains": GUIDELINE_DOMAINS})
+            tools.append({"type": "web_search_20260209", "name": "web_search", "max_uses": self.web_search_uses, "allowed_domains": GUIDELINE_DOMAINS})
         system = [
             {"type": "text", "text": run.charter},
             {"type": "text", "text": "# Clinical skill library\nApply the relevant skills below to every case.\n\n" + run.skills_text,
-             "cache_control": {"type": "ephemeral"}},
+             # 1 h: consults are sporadic, so the default 5-minute cache would usually be cold.
+             "cache_control": {"type": "ephemeral", "ttl": "1h"}},
         ]
         messages: list[dict[str, Any]] = [{"role": "user", "content": run.user_prompt}]
         if run.progress:
@@ -110,7 +129,7 @@ class AnthropicEngine:
                     last["content"].append(nudge)
                 else:
                     messages.append({"role": "user", "content": [nudge]})
-            async with self.client.beta.messages.stream(
+            response = await self._final_message(
                 max_tokens=64000,
                 system=system,
                 tools=tools,
@@ -118,10 +137,8 @@ class AnthropicEngine:
                 # Automatic breakpoint on the conversation, so tool results (drug labels,
                 # abstracts) are not re-billed at full price every round.
                 cache_control={"type": "ephemeral"},
-                **self._common(),
                 **extra,
-            ) as stream:
-                response = await stream.get_final_message()
+            )
             out.usage.rounds += 1
             u = response.usage
             out.usage.input_tokens += u.input_tokens or 0

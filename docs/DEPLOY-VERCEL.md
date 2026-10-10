@@ -42,7 +42,8 @@ GitHub, Microsoft, and company SSO work the same way, using `/oauth/callback/git
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | from step 2 |
 | `MEDICAL_DOCTOR_ALLOWED_DOMAINS` | e.g. `axiad.com` (and/or `MEDICAL_DOCTOR_ALLOWED_EMAILS`) |
 | `POSTGRES_URL` | set by the Supabase integration, or the pooler URI from step 1 |
-| `MEDICAL_DOCTOR_EFFORT` | `medium`, recommended on the Hobby plan (see the time limit below) |
+| `MEDICAL_DOCTOR_CONSULT_DEPTH` | optional: `quick` for the fastest default; callers can still ask for `thorough` |
+| `MEDICAL_DOCTOR_FAST_MODE` | optional: `1` for Claude fast mode (faster, 2x token price) |
 | `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | e.g. `20`, to cap spend per user |
 | `MEDICAL_DOCTOR_DATA_KEYS` | from `medical-doctor-mcp gen-data-key k1`; enables the encrypted patient record (stored in the same Supabase database). Keep a copy in your secret manager: without it the records are unreadable. |
 | `OPENAI_API_KEY` / `MODEL_API_KEY` (Meta) / `LLAMA_API_KEY` | optional: other model providers and the `second_opinion` panel |
@@ -56,10 +57,22 @@ GitHub, Microsoft, and company SSO work the same way, using `/oauth/callback/git
 
 The server won't start in `oauth` mode on Vercel without a database URL. Without one, sign-ins would vanish between instances.
 
+## Patient portal connections (Epic MyChart and others)
+
+1. **Register the app with Epic.** Go to [fhir.epic.com](https://fhir.epic.com) → Build Apps → Create.
+   - **Audience:** Patients.
+   - **Redirect URI:** `https://<project>.vercel.app/ehr/callback`.
+   - **APIs (R4, read):** Patient, Condition, MedicationRequest, AllergyIntolerance, Observation, Immunization, Procedure.
+
+   Epic issues a non-production client ID, which works with its sandbox at once, and a production client ID.
+2. **Set the client ID in Vercel:** `MEDICAL_DOCTOR_SMART_CLIENTS=epic=<client id>`. For Oracle Health, add `oracle=<id>`, registered on the Oracle Health developer portal with the same redirect URI.
+3. **Test:** run `ehr_connect` with `fhir_base_url="sandbox"` and sign in with one of Epic's test patients.
+4. **Go live:** a real patient needs their health system's FHIR R4 base URL from Epic's endpoint directory (open.epic.com → Endpoints). Some health systems must activate a new app before patients can use it.
+
 ## Things to know
 
 - **Time limit.**
-  - The Hobby plan stops a function at **300 s**. Most consults finish well within that, especially at `MEDICAL_DOCTOR_EFFORT=medium`.
+  - The Hobby plan stops a function at **300 s**. Most consults finish well within that, especially at the default `standard` depth.
   - On Pro, raise `maxDuration` in `vercel.json` to `800`.
   - The server streams progress updates during a consult, so clients see activity while it runs.
 - **Region.** Put the function in the same region as the database: **Settings → Functions → Region**, e.g. `iad1` for Supabase `us-east-1`. Every token check reads Postgres, and cross-region round trips add latency.

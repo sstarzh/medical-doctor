@@ -30,13 +30,14 @@ It has five layers:
 | `search` / `fetch` | Search across skills, calculators, and PubMed, then read a result (the convention ChatGPT connectors and deep research use) |
 | `whoami` | Shows the signed-in account, to confirm a connector works |
 | `patient_create` / `patient_list` / `patient_chart` / `patient_update` / `patient_delete_item` | The personal-doctor chart for you and family members (encrypted, private to the account) |
+| `ehr_connect` | Connects a patient portal (Epic MyChart, Oracle Health, athenahealth, any SMART on FHIR server) and imports the records |
 | `patient_import_fhir` | Imports records from a hospital, clinic or health-app FHIR R4 export (conditions, medications, allergies, labs, vitals, immunizations, procedures, family history). Re-importing updates entries instead of duplicating them. |
 | `patient_export` / `patient_erase` / `patient_access_log` | FHIR R4 export, permanent erasure (crypto-shredding), and a tamper-evident access log |
 | `preventive_care_due` | Screenings, vaccines, and counseling due by age, sex, and risk (USPSTF A/B, CDC/ACIP, AAP Bright Futures) |
 | `draft_prescription` / `draft_referral` | Drafts for a licensed clinician, with deterministic safety checks and patient- and clinician-facing calls to action |
 | `care_plan_update` | Track drafts and follow-ups (accepted, completed, declined) |
 
-`consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
+`consult` takes optional `depth` (`quick` / `standard` / `thorough`, trading speed for verification), `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
 
 The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
 
@@ -60,6 +61,10 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 - **Audit.** Every read and write goes to a hash-chained audit table; `patient_access_log` reports whether the chain is intact. Clinical text is never logged.
 - **Where it's stored.** Locally (stdio), the chart lives in `~/.medical-doctor/records.db` with an auto-created key file. On servers it lives in Postgres (Supabase), in the `medical_doctor` schema with RLS on.
 - **Importing from hospitals.** Download records as FHIR (patient portals' "download my records", Apple Health / Health Connect exports, or a SMART on FHIR `Patient/$everything`) and call `patient_import_fhir`. Imported demographics only fill blanks; entries the user entered are never overwritten. A bundle with more than one patient is refused. Live SMART on FHIR sign-in to an EHR is on the roadmap.
+- **Connecting patient portals (MyChart and others).** `ehr_connect(patient_id, fhir_base_url, portal)` returns a link. The user opens it, signs in to their portal (Epic MyChart, Oracle Health/Cerner, athenahealth, or any SMART on FHIR server) and approves read access. Conditions, medications, allergies, labs, vitals, immunizations and procedures are then imported into the profile.
+  - **Labcorp and Quest:** neither offers an API for outside patient apps. Their results usually reach the ordering health system, so they arrive through that system's portal connection. Results that aren't there can be imported with `patient_import_fhir` or entered by hand.
+  - **Safeguards:** the link expires in 10 minutes, works once, and shows which account and profile will receive the records. The portal's access token is used once for the import and never stored. The server only contacts public https FHIR servers.
+  - **Setup:** see "Patient portal connections" in [docs/DEPLOY-VERCEL.md](docs/DEPLOY-VERCEL.md).
 - **Sharing with a model.** A chart is sent to a model only when you pass `patient_id` to `consult`, and only as a minimal clinical summary.
 
 ## Model providers: Claude, OpenAI, Meta Muse Spark, Llama
@@ -199,13 +204,18 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_SECOND_OPINION` | – | Providers on the second-opinion panel, e.g. `anthropic,openai,meta` |
 | `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
-| `MEDICAL_DOCTOR_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max` (use `max` for the hardest cases) |
+| `MEDICAL_DOCTOR_CONSULT_DEPTH` | `standard` | Default consult depth: `quick` (~4 tool rounds, low effort, no web search), `standard` (8 rounds, 2 guideline searches), `thorough` (12 rounds, high effort, 5 searches). Callers can override per consult with `depth`. |
+| `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max` |
+| `MEDICAL_DOCTOR_FAST_MODE` | `0` | `1` turns on Claude fast mode (about 2.5x faster output at 2x the token price; Claude API only). Falls back to standard speed automatically when fast mode is rate-limited. |
 | `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |
 | `MEDICAL_DOCTOR_VERIFY_CITATIONS` | `1` | Check every PMID in consult notes against PubMed |
 | `LOG_FORMAT` | `text` (`json` on Vercel) | `json` for one JSON object per log line |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | – | Export traces over OTLP (needs `pip install '.[otel]'`) |
 | `MODEL_API_KEY`, `MEDICAL_DOCTOR_META_MODEL` | – / `muse-spark-1.3` | Meta Model API key and model; `*-contributor` models are refused |
 | `MEDICAL_DOCTOR_LLAMA_BASE_URL` | – | Required for the `llama` provider (OpenAI-compatible Llama host) |
+| `MEDICAL_DOCTOR_SMART_CLIENTS` | – | Patient-portal app IDs, e.g. `epic=<client id>,oracle=<client id>`; enables `ehr_connect` |
+| `MEDICAL_DOCTOR_SMART_SECRETS` | – | Only for portals that registered the app as confidential: `epic=<secret>` |
+| `MEDICAL_DOCTOR_SMART_SCOPES` | SMART v1 patient read scopes | Override the requested scopes |
 | `MEDICAL_DOCTOR_MAX_TOOL_ROUNDS` | `12` | Upper bound on tool calls per consult |
 | `MEDICAL_DOCTOR_SKILLS_DIR` | bundled | Use your own or extended skill library |
 | `NCBI_API_KEY`, `OPENFDA_API_KEY` | – | Optional; raise rate limits |

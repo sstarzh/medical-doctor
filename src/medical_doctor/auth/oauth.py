@@ -49,6 +49,8 @@ log = logging.getLogger("medical_doctor.auth")
 
 SCOPE = "mcp"
 PENDING_TTL = 600
+TOKEN_CACHE_TTL = 30.0
+TOKEN_CACHE_MAX = 10_000
 CODE_TTL = 300
 UNUSED_CLIENT_TTL = 24 * 3600  # registrations that never complete a sign-in expire after a day
 BROWSER_COOKIE = "md_login"
@@ -108,6 +110,10 @@ class BrokerOAuthProvider:
         self.astore = AsyncStore(store)  # all I/O off the event loop
         store.caps = {**STORE_CAPS, **store.caps}
         self.upstreams = {idp.name: UpstreamClient(idp, http) for idp in settings.idps}
+        # MCP clients send many requests per session and each one validates its bearer token. A short
+        # per-instance cache saves a database round trip per request. Revocation in this instance clears
+        # it at once; other instances honour a revocation within TOKEN_CACHE_TTL seconds.
+        self._token_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
     # --- client registration (RFC 7591) ------------------------------------
 
@@ -194,6 +200,7 @@ class BrokerOAuthProvider:
             used = await self.astore.get("refresh_used", key)
             if used:
                 log.warning("refresh token reuse detected; revoking grant for %s", used.get("subject"))
+                self._token_cache.clear()
                 await self.astore.revoke_grant(used["grant_id"])
             return None
         if data["client_id"] != client.client_id:
@@ -233,6 +240,7 @@ class BrokerOAuthProvider:
         # Absolute session lifetime: rotation never extends a sign-in past max_session_lifetime.
         remaining = int(auth_time + s.max_session_lifetime - now)
         if remaining <= 0:
+            self._token_cache.clear()
             await self.astore.revoke_grant(grant_id)
             raise TokenError("invalid_grant", "session expired; sign in again")
         access_ttl, refresh_ttl = min(s.access_token_ttl, remaining), min(s.refresh_token_ttl, remaining)
@@ -255,15 +263,27 @@ class BrokerOAuthProvider:
     async def load_access_token(self, token: str) -> AccessToken | None:
         if key_token := api_key_access_token(self.settings, token):
             return key_token
-        data = await self.astore.get("access", digest(token))
-        if not data:
-            return None
+        key = digest(token)
+        hit = self._token_cache.get(key)
+        now = time.time()
+        if hit and hit[0] > now:
+            data = dict(hit[1])
+        else:
+            data = await self.astore.get("access", key)
+            if not data:
+                self._token_cache.pop(key, None)
+                return None
+            if len(self._token_cache) >= TOKEN_CACHE_MAX:
+                self._token_cache.clear()
+            expires = data.get("expires_at") or now + TOKEN_CACHE_TTL
+            self._token_cache[key] = (min(now + TOKEN_CACHE_TTL, expires), dict(data))
         claims = {**data.pop("claims", {}), "iss": self.settings.public_url}
         return GrantAccessToken(token=token, claims=claims, **data)
 
     async def revoke_token(self, token: AccessToken | RefreshToken) -> None:
         grant_id = getattr(token, "grant_id", None)
         if grant_id:
+            self._token_cache.clear()
             await self.astore.revoke_grant(grant_id)
 
 
