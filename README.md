@@ -2,11 +2,13 @@
 
 An MCP server that gives Claude, OpenClaw, or any other MCP-capable agent an **attending-physician-grade clinical consult service**.
 
-It has three layers:
+It has five layers:
 
-1. **A deterministic safety layer.** A red-flag screen catches emergencies such as stroke, ACS, sepsis, anaphylaxis, suicide risk, obstetric and neonatal emergencies, and cauda equina. It runs before any model reasoning and still works when no LLM is available.
-2. **Verified tools.** There are 18 validated clinical calculators, plus live FDA drug labels, label-based interaction screening, RxNorm, PubMed, and ClinicalTrials.gov. The physician is required to compute scores and confirm doses with these tools instead of answering from memory.
-3. **The attending.** Claude Opus 5.5 runs as a dual-boarded **internal medicine + pediatrics (Med-Peds)** attending, with depth in pediatric emergency medicine and neonatology. It has a physician charter and a library of 20 specialty **skills**, and for anyone under 18 it switches to pediatric reasoning, norms, decision rules and weight-based dosing. It produces a structured consult note: urgency, problem representation, a ranked differential with can't-miss diagnoses, recommended workup, evidence-cited management, and a plain-language explanation for the patient.
+1. **A deterministic safety layer.** A red-flag screen catches emergencies such as cardiac arrest, stroke, ACS, sepsis, anaphylaxis, overdose, suicide risk, severe hypo- and hyperglycemia, obstetric and neonatal emergencies, and cauda equina. It handles negation and history ("no history of heart disease and now has chest pain" is still flagged). It runs before any model reasoning, works without an LLM, and is locked by a regression corpus of real phrasings.
+2. **Verified tools.** There are 29 validated clinical calculators (including MELD 3.0 and pediatric decision rules), plus live FDA drug labels, label-based interaction screening, RxNorm, PubMed, and ClinicalTrials.gov. The physician must compute scores and confirm doses with these tools instead of answering from memory.
+3. **The attending.** A dual-boarded **internal medicine + pediatrics (Med-Peds)** attending with a physician charter and 22 specialty **skills**. It produces a structured consult note: urgency, a ranked differential with can't-miss diagnoses, workup, evidence-cited management, and a plain-language explanation. It runs on **Claude (default), OpenAI, Meta Muse Spark, or open-weight Llama**, and optionally on a **multi-model panel** that reconciles disagreements.
+4. **A personal health record.** Each account holds an encrypted chart for the user and family members: history, medicines, allergies, results, and notes. The attending reads it, follows up on open items, and suggests preventive care.
+5. **Calls to action, never orders.** Prescription and referral **drafts** (FHIR `MedicationRequest` / `ServiceRequest` with `status=draft`) are checked in code against the chart (allergy cross-reactivity, interactions, pregnancy, pediatric age and weight, Beers criteria, kidney function). Controlled substances are refused. A licensed clinician reviews and issues anything real.
 
 > ⚠️ **Decision support, not a doctor.** This software does not diagnose, prescribe, or replace a licensed clinician who can examine the patient. It is not a medical device and has not been cleared by the FDA or any other regulator. Do not use it for real patient care without clinical oversight, validation, and the regulatory and privacy review that applies to you (HIPAA, GDPR). In an emergency, call your local emergency number.
 
@@ -26,8 +28,40 @@ It has three layers:
 | `list_skills` / `get_skill` | The specialty playbooks |
 | `search` / `fetch` | Search across skills, calculators, and PubMed, then read a result (the convention ChatGPT connectors and deep research use) |
 | `whoami` | Shows the signed-in account, to confirm a connector works |
+| `patient_create` / `patient_list` / `patient_chart` / `patient_update` / `patient_delete_item` | The personal-doctor chart for you and family members (encrypted, private to the account) |
+| `patient_export` / `patient_erase` / `patient_access_log` | FHIR R4 export, permanent erasure (crypto-shredding), and a tamper-evident access log |
+| `preventive_care_due` | Screenings, vaccines, and counseling due by age, sex, and risk (USPSTF A/B, CDC/ACIP, AAP Bright Futures) |
+| `draft_prescription` / `draft_referral` | Drafts for a licensed clinician, with deterministic safety checks and patient- and clinician-facing calls to action |
+| `care_plan_update` | Track drafts and follow-ups (accepted, completed, declined) |
 
-The server also exposes **prompts** (`attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
+`consult` takes optional `patient_id` (include the chart), `provider` (`anthropic` | `openai` | `meta` | `llama`), and `second_opinion` (run the case past every configured provider and reconcile the notes).
+
+The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, `attending_consult`, `pediatric_consult`, `medication_review`) and **resources** (`skill://{name}`).
+
+## Personal doctor: the patient record
+
+- **What it holds.** One account can hold up to 20 profiles (yourself, children, parents). Each has demographics, pregnancy and lactation, weight, allergies with reactions, medications, conditions, immunizations, procedures, family and social history, observations (vitals and labs), visit notes, and a care plan.
+- **Owner.** The owner is the signed-in identity, a hash of issuer plus subject, and never a tool argument. Shared API keys can't own charts; only keys labelled `person:<name>` can.
+- **Encryption.** Each patient has its own AES-256-GCM data key, wrapped by the key-encryption key in `MEDICAL_DOCTOR_DATA_KEYS`. Every record is bound to its row (owner, patient, section, item), so a copied ciphertext won't decrypt elsewhere. Only opaque IDs and timestamps are stored in clear.
+- **Key rotation.** Generate a new key with `medical-doctor-mcp gen-data-key k2` and prepend it. Old keys stay listed until patient keys are re-wrapped (`RecordRepo.rewrap_keys`).
+- **Erasure.** Destroying the patient's data key makes every copy, including backups, unreadable.
+- **Audit.** Every read and write goes to a hash-chained audit table; `patient_access_log` reports whether the chain is intact. Clinical text is never logged.
+- **Where it's stored.** Locally (stdio), the chart lives in `~/.medical-doctor/records.db` with an auto-created key file. On servers it lives in Postgres (Supabase), in the `medical_doctor` schema with RLS on.
+- **Sharing with a model.** A chart is sent to a model only when you pass `patient_id` to `consult`, and only as a minimal clinical summary.
+
+## Model providers: Claude, OpenAI, Meta Muse Spark, Llama
+
+| Provider | Set | Default model | Notes |
+|---|---|---|---|
+| `anthropic` (default) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | Prompt-cached skill library, guideline web search (trusted publishers only), server-side refusal fallback |
+| `openai` | `OPENAI_API_KEY` | `gpt-6-sol` | Chat Completions function calling; optional `MEDICAL_DOCTOR_OPENAI_REASONING_EFFORT` |
+| `meta` | `MODEL_API_KEY` (or `META_API_KEY`) | `muse-spark-1.3` | Meta Model API (`https://api.meta.ai/v1`, OpenAI-compatible). Also `muse-spark-1.2`, or `muse-spark-1.1` for 1M-token context. **`*-contributor` models are refused**: Meta uses their traffic to improve its products, so they must never see patient data. |
+| `llama` | `LLAMA_API_KEY` + `MEDICAL_DOCTOR_LLAMA_BASE_URL` | `meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8` | Open-weight Llama on any OpenAI-compatible host: Together, Groq, Fireworks, vLLM, Bedrock. (Meta's own Llama API was retired in July 2026.) |
+
+- **Choosing a provider.** Pick the server default with `MEDICAL_DOCTOR_PROVIDER`. Override models per provider with `MEDICAL_DOCTOR_ANTHROPIC_MODEL`, `MEDICAL_DOCTOR_OPENAI_MODEL`, `MEDICAL_DOCTOR_META_MODEL`, or `MEDICAL_DOCTOR_LLAMA_MODEL`. Model IDs differ between Llama hosts.
+- **Same safety on every provider.** All providers use the same charter, tools, red-flag screen, deterministic checks, and time budget.
+- **Smaller context windows.** Models without large cached contexts get the most relevant skills instead of all 22.
+- **Second opinion.** Set `MEDICAL_DOCTOR_SECOND_OPINION=anthropic,openai,meta` and call `consult(..., second_opinion=true)`. Every configured model writes a note in parallel; the primary model then writes one reconciled note with an explicit **Points of disagreement** section, and never drops a can't-miss diagnosis that any model raised.
 
 ### Skills (Agent Skills format: `skills/<name>/SKILL.md`)
 
@@ -120,6 +154,7 @@ docker run -p 8000:8000 -v md-data:/data --env-file .env medical-doctor-mcp     
 
 - **Vercel + Supabase (serverless):** see **[docs/DEPLOY-VERCEL.md](docs/DEPLOY-VERCEL.md)**. `app.py` is the Vercel entry point. Sign-in data lives in Supabase Postgres (set `POSTGRES_URL`), so it survives across serverless instances.
 - Put it behind HTTPS (Cloud Run, Fly.io, Render, ECS, or Kubernetes with an ingress).
+- Network deployments must set `MEDICAL_DOCTOR_AUTH`. The server refuses to start publicly without it, because anyone could run paid consults and records are tied to a signed-in identity.
 - Without a database URL, the built-in OAuth store is SQLite, so run **one instance** with a persistent `/data` volume. With `POSTGRES_URL` or `MEDICAL_DOCTOR_DATABASE_URL` (Supabase, Neon, RDS, …), you can run any number of instances.
 - To scale out horizontally, use `MEDICAL_DOCTOR_AUTH=jwt` with an external authorization server, plus `MEDICAL_DOCTOR_STATELESS=1`.
 - For a quick test without deploying, run `cloudflared tunnel --url http://localhost:8000`.
@@ -145,9 +180,14 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | Env var | Default | Meaning |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | – | Credentials for `consult` (an `ant auth login` profile also works) |
-| `MEDICAL_DOCTOR_MODEL` | `claude-opus-5-5` | Model behind the attending |
+| `MEDICAL_DOCTOR_PROVIDER` | `anthropic` | `anthropic` / `openai` / `meta` / `llama` (see Model providers) |
+| `MEDICAL_DOCTOR_MODEL` | provider default | Model for the default provider |
+| `OPENAI_API_KEY`, `MODEL_API_KEY`, `LLAMA_API_KEY` | – | Credentials for the OpenAI, Meta and Llama providers |
+| `MEDICAL_DOCTOR_SECOND_OPINION` | – | Providers on the second-opinion panel, e.g. `anthropic,openai,meta` |
+| `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
+| `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
 | `MEDICAL_DOCTOR_EFFORT` | `high` | `low` / `medium` / `high` / `xhigh` / `max` (use `max` for the hardest cases) |
-| `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, NIH, NICE, WHO, ACC/AHA, …) |
+| `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |
 | `MEDICAL_DOCTOR_MAX_TOOL_ROUNDS` | `12` | Upper bound on tool calls per consult |
 | `MEDICAL_DOCTOR_SKILLS_DIR` | bundled | Use your own or extended skill library |
 | `NCBI_API_KEY`, `OPENFDA_API_KEY` | – | Optional; raise rate limits |
@@ -156,7 +196,8 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_CORS_ORIGINS` | `*` | Origins allowed for browser-based clients |
 | `MEDICAL_DOCTOR_STATELESS` | `0` | `1` for load-balanced or serverless deployments (always on in `app.py`) |
 | `POSTGRES_URL` / `MEDICAL_DOCTOR_DATABASE_URL` | – | Postgres for sign-in data (Supabase pooled URI); replaces the SQLite file |
-| `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | `0` (unlimited) | Per-user consult cap |
+| `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | `20` | Per-user consult cap (`0` = unlimited) |
+| `MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED` | `0` | The server refuses to listen on a non-loopback address, or run on Vercel, without auth unless this is `1` |
 
 The consult uses the server-side refusal fallback (`fallbacks: "default"`). If a safety classifier declines a legitimate clinical question, the request is retried on Anthropic's recommended fallback model. The whole skill library sits in a prompt-cached system block, so repeat consults pay roughly 10% of the input cost for it.
 

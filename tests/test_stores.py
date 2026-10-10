@@ -123,8 +123,8 @@ def test_clean_dsn_strips_provider_params():
     from medical_doctor.auth.pgstore import clean_dsn
 
     url = "postgres://u:p@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=base-pooler.x&pgbouncer=true"
-    assert clean_dsn(url) == "postgres://u:p@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require"
-    assert clean_dsn("postgres://u:p@db.example.com/postgres").endswith("?sslmode=require")
+    assert clean_dsn(url) == "postgres://u:p@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require&connect_timeout=5"
+    assert "sslmode=require" in clean_dsn("postgres://u:p@db.example.com/postgres")
     assert "sslmode" not in clean_dsn("postgres://u@localhost:5432/x")
 
 
@@ -137,5 +137,23 @@ async def test_full_oauth_flow_on_postgres():
         async with client_for(store=st) as c:
             _, _, tokens = await get_tokens(c)
             assert (await call(c, "initialize", INIT, tokens["access_token"])).status_code == 200
+    finally:
+        st.close()
+
+
+@needs_pg
+def test_pg_accepts_nul_and_survives_dropped_connections():
+    import psycopg
+
+    st = fresh_pg()
+    try:
+        st.put("client", "nul", {"client_name": "evil\x00name", "state": "a\\u0000b"}, 60)
+        assert st.get("client", "nul") == {"client_name": "evilname", "state": "a\\u0000b"}
+        with psycopg.connect(PG_URL, autocommit=True) as admin:  # what Supavisor does to idle connections
+            admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+            )
+        assert st.get("client", "nul")["client_name"] == "evilname"  # pool hands out a healthy connection
     finally:
         st.close()

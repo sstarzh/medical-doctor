@@ -41,7 +41,7 @@ SETTINGS = Settings(
 MCP_HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-06-18"}
 
 
-def fake_google(email: str):
+def fake_google(email: str, hd: str | None = "workspace"):
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "oauth2.googleapis.com":
             body = parse_qs(request.content.decode())
@@ -49,17 +49,22 @@ def fake_google(email: str):
             return httpx.Response(200, json={"access_token": "upstream-token", "token_type": "Bearer"})
         if request.url.host == "openidconnect.googleapis.com":
             assert request.headers["authorization"] == "Bearer upstream-token"
-            return httpx.Response(200, json={"sub": "1234", "email": email, "email_verified": True, "name": "Dr Test"})
+            info = {"sub": "1234", "email": email, "email_verified": True, "name": "Dr Test"}
+            if hd:  # Google Workspace accounts carry the hosted-domain claim
+                info["hd"] = email.rsplit("@", 1)[-1] if hd == "workspace" else hd
+            return httpx.Response(200, json=info)
         return httpx.Response(404)
 
     return lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 @asynccontextmanager
-async def client_for(settings=SETTINGS, email="doc@example.com", store=None):
+async def client_for(settings=SETTINGS, email="doc@example.com", store=None, hd="workspace"):
     store = store or Store()
-    app = create_app(settings, host="0.0.0.0", stateless=True, json_response=True, store=store, http=fake_google(email))
-    inner = app.app  # unwrap CORS to run the MCP session manager lifespan
+    app = create_app(settings, host="0.0.0.0", stateless=True, json_response=True, store=store, http=fake_google(email, hd))
+    inner = app
+    while not hasattr(inner, "router"):  # unwrap middleware (CORS, rate limit) to run the MCP lifespan
+        inner = inner.app
     async with inner.router.lifespan_context(inner):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=PUBLIC) as c:
             yield c
@@ -386,7 +391,7 @@ async def test_oidc_discovery_failure_shows_friendly_error():
         assert r.status_code == 502 and "could not be reached" in r.text
 
 
-def test_rate_limit_is_shared_across_processes(tmp_path):
+async def test_rate_limit_is_shared_across_processes(tmp_path):
     from mcp.server.mcpserver.exceptions import ToolError
 
     from medical_doctor.auth.store import Store as S
@@ -394,11 +399,11 @@ def test_rate_limit_is_shared_across_processes(tmp_path):
 
     db = str(tmp_path / "auth.db")
     worker_a, worker_b = RateLimiter(2, S(db)), RateLimiter(2, S(db))  # two workers, one database
-    worker_a.check("alice")
-    worker_b.check("alice")
+    await worker_a.check("alice")
+    await worker_b.check("alice")
     with pytest.raises(ToolError):
-        worker_a.check("alice")
-    worker_b.check("bob")
+        await worker_a.check("alice")
+    await worker_b.check("bob")
 
 
 async def test_jwt_entra_scp_string():
@@ -419,3 +424,52 @@ async def test_jwt_missing_email_verified_is_not_trusted_by_default():
     assert await v.verify_token(_jwt(**claims)) is None
     trusting = JwtVerifier(replace(JWT_SETTINGS, jwt_trust_unverified_email=True), jwks_client=_FakeJwks())
     assert await trusting.verify_token(_jwt(**claims))
+
+
+# --- regressions for the security review ------------------------------------------
+
+
+async def test_personal_google_account_with_company_email_is_refused():
+    async with client_for(hd=None) as c:  # consumer Google account, no Workspace `hd` claim
+        _, cb, _ = await sign_in(c)
+        assert cb.status_code == 403 and "Workspace" in cb.text
+
+
+@pytest.mark.parametrize(
+    "uris,name",
+    [
+        (["https://claude.ai@evil.example/cb"], "x"),  # userinfo phishing
+        (["javascript:alert(1)"], "x"),
+        (["http://evil.example/cb"], "x"),  # plain http off-loopback
+        ([REDIRECT] * 6, "x"),  # too many
+        ([REDIRECT], "n" * 500),  # oversized name
+    ],
+)
+async def test_registration_rejects_abusive_metadata(uris, name):
+    async with client_for() as c:
+        r = await c.post("/register", json={"redirect_uris": uris, "client_name": name, "token_endpoint_auth_method": "none"})
+        assert r.status_code == 400, r.text
+
+
+async def test_registration_allows_loopback_and_native_schemes():
+    async with client_for() as c:
+        for uri in ("http://127.0.0.1:33418/callback", "cursor://anysphere.cursor-retrieval/oauth/callback"):
+            r = await c.post("/register", json={"redirect_uris": [uri], "token_endpoint_auth_method": "none"})
+            assert r.status_code == 201, (uri, r.text)
+
+
+async def test_per_ip_rate_limit_on_registration():
+    async with client_for() as c:
+        body = {"redirect_uris": [REDIRECT], "token_endpoint_auth_method": "none"}
+        codes = [(await c.post("/register", json=body)).status_code for _ in range(11)]
+        assert codes[:10] == [201] * 10 and codes[10] == 429
+
+
+async def test_consent_revisit_does_not_extend_pending_signin():
+    st = Store()
+    async with client_for(store=st) as c:
+        txn = await _start(c)
+        before = st._db.execute("SELECT expires_at FROM kv WHERE kind='pending' AND key=?", (txn,)).fetchone()[0]
+        await c.get(f"/login?txn={txn}")
+        after = st._db.execute("SELECT expires_at FROM kv WHERE kind='pending' AND key=?", (txn,)).fetchone()[0]
+        assert after <= before + 0.5

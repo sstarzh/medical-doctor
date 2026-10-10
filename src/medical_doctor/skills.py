@@ -9,6 +9,7 @@ The same skill folders are consumed by three runtimes:
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -64,3 +65,23 @@ def load_skills() -> dict[str, Skill]:
 def skill_library_text() -> str:
     """All skills concatenated in a stable order (cache-friendly system prompt)."""
     return "\n\n---\n\n".join(s.full_text for s in load_skills().values())
+
+
+_WORD = re.compile(r"[a-z]{4,}")
+
+
+def select_skills(text: str, k: int = 6, always: tuple[str, ...] = ()) -> list[str]:
+    """Pick the most relevant skills for a case by keyword overlap (for models without a large,
+    cheaply cached context). `always` skills are included first."""
+    skills = load_skills()
+    terms = set(_WORD.findall(text.lower()))
+    scored = []
+    for s in skills.values():
+        if s.name in always:
+            continue
+        head = set(_WORD.findall((s.name.replace("-", " ") + " " + s.description).lower()))
+        body = set(_WORD.findall(s.body.lower()))
+        score = 4 * len(terms & head) + len(terms & body)
+        scored.append((score, s.name))
+    scored.sort(reverse=True)
+    return [n for n in always if n in skills] + [n for score, n in scored[:k] if score > 0]

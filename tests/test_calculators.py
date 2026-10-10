@@ -79,3 +79,25 @@ def test_qtc_and_map_and_bmi():
 def test_centor_age_modifier():
     assert c.centor_mcisaac(10, True, True, True, True)["value"] == 5
     assert c.centor_mcisaac(50, False, False, False, True)["value"] == 0
+
+
+# --- regressions from the correctness review --------------------------------
+
+
+def test_qtc_rejects_seconds_and_uses_sex_thresholds():
+    with pytest.raises(ValueError):
+        c.qtc(0.44, 70)
+    assert "Prolonged" in c.qtc(460, 60, "male")["interpretation"]
+    assert c.qtc(460, 60, "female")["interpretation"].startswith("Normal")
+
+
+def test_meld_rounds_half_up():
+    # bilirubin 2.9, Cr 1, INR 1 -> MELD(i) 10.5 -> UNOS rounds half up to 11
+    assert c.meld_na(1.0, 2.9, 1.0, 137)["value"] == 11
+
+
+def test_meld_3():
+    assert c.meld_3(1.0, 1.0, 1.0, 137, 3.5, "male")["value"] == 6
+    assert c.meld_3(1.0, 1.0, 1.0, 137, 3.5, "female")["value"] == 7  # +1.33 for female sex
+    sick = c.meld_3(2.5, 6.0, 2.2, 128, 2.4, "male")["value"]
+    assert 30 <= sick <= 40

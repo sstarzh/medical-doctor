@@ -31,6 +31,7 @@ class Identity:
     email: str
     email_verified: bool
     name: str = ""
+    hosted_domain: str | None = None  # Google Workspace domain ("hd" claim); None for consumer accounts
 
 
 def pkce_pair() -> tuple[str, str]:
@@ -106,6 +107,7 @@ class UpstreamClient:
             email=(info.get("email") or "").lower(),
             email_verified=bool(verified),
             name=info.get("name", ""),
+            hosted_domain=(info.get("hd") or "").lower() or None,
         )
 
     async def _github_identity(self, c: httpx.AsyncClient, auth: dict[str, str]) -> Identity:
@@ -124,8 +126,15 @@ class UpstreamClient:
         )
 
 
-def check_access(settings: Settings, email: str, email_verified: bool) -> None:
-    """Enforce the sign-in allowlist. Raises LoginError when the user may not use the service."""
+def check_access(
+    settings: Settings, email: str, email_verified: bool, *, hosted_domain: str | None = None, provider: str | None = None
+) -> None:
+    """Enforce the sign-in allowlist. Raises LoginError when the user may not use the service.
+
+    For Google, a domain match also requires the Workspace `hd` claim to equal that domain:
+    a consumer Google account created with a company address (e.g. by a former employee) has a
+    verified email but no `hd`, and must not pass a domain allowlist.
+    """
     if settings.allow_any_user and not (settings.allowed_emails or settings.allowed_domains):
         return
     if not email or not email_verified:
@@ -134,5 +143,7 @@ def check_access(settings: Settings, email: str, email_verified: bool) -> None:
         return
     domain = email.rsplit("@", 1)[-1]
     if domain in settings.allowed_domains:
+        if provider == "google" and hosted_domain != domain:
+            raise LoginError(f"Sign in with your {domain} Google Workspace account (not a personal Google account).")
         return
     raise LoginError(f"{email} is not authorized to use this service. Ask the administrator for access.")

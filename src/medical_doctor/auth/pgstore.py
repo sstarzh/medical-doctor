@@ -51,7 +51,25 @@ def clean_dsn(url: str) -> str:
     query = [(k, v) for k, v in parse_qsl(parts.query) if k in _LIBPQ_PARAMS]
     if not any(k == "sslmode" for k, _ in query) and parts.hostname not in ("localhost", "127.0.0.1"):
         query.append(("sslmode", "require"))
+    if not any(k == "connect_timeout" for k, _ in query):
+        query.append(("connect_timeout", "5"))  # fail fast instead of hanging on the OS TCP timeout
     return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def _strip_nul(value: Any) -> Any:
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, dict):
+        return {_strip_nul(k): _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    return value
+
+
+def _jsonb(data: dict[str, Any]) -> str:
+    """JSON text that Postgres JSONB accepts: no NaN/Infinity, and no NUL characters, which
+    unauthenticated inputs such as an OAuth client_name or state could otherwise inject."""
+    return json.dumps(_strip_nul(data), allow_nan=False)
 
 
 class PostgresStore:
@@ -61,6 +79,11 @@ class PostgresStore:
             min_size=1,
             max_size=max_size,
             kwargs={"autocommit": True, "prepare_threshold": None},  # transaction-pooler safe
+            # Supavisor/Postgres drop idle connections and serverless instances get frozen: check a
+            # connection before handing it out and recycle idle ones, so requests never get a dead one.
+            check=ConnectionPool.check_connection,
+            max_idle=60,
+            timeout=10,
             open=True,
         )
         self.caps = caps or {}
@@ -93,7 +116,7 @@ class PostgresStore:
                 """INSERT INTO medical_doctor.kv (kind, key, data, expires_at, grant_id) VALUES (%s, %s, %s, %s, %s)
                    ON CONFLICT (kind, key) DO UPDATE
                    SET data = EXCLUDED.data, expires_at = EXCLUDED.expires_at, grant_id = EXCLUDED.grant_id""",
-                (kind, key, json.dumps(data), time.time() + ttl, grant_id),
+                (kind, key, _jsonb(data), time.time() + ttl, grant_id),
             )
 
     def get(self, kind: str, key: str) -> dict[str, Any] | None:

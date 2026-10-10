@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Literal
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+import anyio
+from pydantic import Field
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -17,6 +21,8 @@ from starlette.responses import JSONResponse, Response
 
 from . import __version__, calculators, pediatric, physician, safety, sources
 from .config import Settings
+from .identity import AuthRequired, current_principal
+from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
 from .skills import load_skills
 
 log = logging.getLogger("medical_doctor")
@@ -39,6 +45,11 @@ Workflow for any health question:
    calculator, drug-label, PubMed and trials tools here, and the skills (`list_skills`/`get_skill`).
 3. Never compute clinical scores or quote drug doses/interactions from memory: use the tools.
 4. `search` / `fetch` find and read skills, calculators and PubMed articles.
+5. Personal doctor: the user can keep an encrypted chart for themselves and family members
+   (`patient_list`, `patient_create`, `patient_chart`, `patient_update`). Pass `patient_id` to `consult`
+   so the attending sees the history. Use the `personal_doctor_visit` / `patient_intake` prompts.
+6. Treatment and referrals are DRAFTS for a licensed clinician (`draft_prescription`, `draft_referral`),
+   presented as calls to action — never as prescriptions or orders.
 
 {DISCLAIMER}
 """
@@ -46,8 +57,11 @@ Workflow for any health question:
 READ_ONLY = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 READ_ONLY_WEB = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=True)
 
-# Tools that the inner physician model must not call (recursion / meta tools).
-_NOT_FOR_PHYSICIAN = {"consult", "list_skills", "get_skill", "search", "fetch", "whoami"}
+# Tools that the inner physician model must not call: recursion, meta tools, and anything that
+# reads or writes the patient record (the consult gets the chart summary explicitly instead).
+_NOT_FOR_PHYSICIAN = {"consult", "list_skills", "get_skill", "search", "fetch", "whoami", "care_plan_update"} | RECORD_TOOLS
+MAX_TOOL_OUTPUT_CHARS = 12_000
+MAX_CASE_CHARS = 50_000
 
 ALL_CALCULATORS = {**calculators.CALCULATORS, **pediatric.PEDIATRIC_CALCULATORS}
 
@@ -79,14 +93,14 @@ class RateLimiter:
         self.per_hour = per_hour
         self.store = store
 
-    def check(self, key: str) -> None:
+    async def check(self, key: str) -> None:
         if self.per_hour <= 0:
             return
         if self.store is None:
             from .auth.store import Store
 
             self.store = Store()
-        if not self.store.hit(f"consult:{key}", self.per_hour, 3600):
+        if not await anyio.to_thread.run_sync(self.store.hit, f"consult:{key}", self.per_hour, 3600):
             raise ToolError(f"Consult limit reached ({self.per_hour}/hour). Try again later.")
 
 
@@ -132,12 +146,54 @@ def auth_kwargs(settings: Settings, store: Any, http: Any = None) -> dict[str, A
     }
 
 
-def build_server(settings: Settings | None = None, *, store: Any = None, http: Any = None) -> MCPServer:
+def open_records(settings: Settings, *, local_mode: bool, store: Any = None) -> Records:
+    """Build the encrypted patient-record service (or explain why it is disabled)."""
+    from .records.crypto import Cipher, DataKeyError, local_key_file
+    from .records.repo import AsyncRecordRepo, RecordRepo
+    from .records.service import PatientService
+
+    if settings.auth_mode == "none" and not local_mode:
+        return Records(None, local_mode, "Patient records need sign-in: enable MEDICAL_DOCTOR_AUTH on network deployments.")
+    persistent = bool(settings.database_url or settings.db_path)
+    try:
+        if settings.data_keys:
+            kek = Cipher.from_spec(settings.data_keys)
+        elif not persistent:
+            kek = Cipher.ephemeral()  # in-memory database (tests, demos): nothing outlives the process
+        elif local_mode:
+            kek = Cipher.from_spec(local_key_file(Path(settings.db_path or "~/.medical-doctor/x").expanduser().parent / "data.key"))
+        else:
+            return Records(None, local_mode, "Patient records are disabled: set MEDICAL_DOCTOR_DATA_KEYS (medical-doctor-mcp gen-data-key).")
+    except DataKeyError as exc:
+        return Records(None, local_mode, f"Patient records are disabled: {exc}")
+    if settings.database_url:
+        pool = getattr(store, "pool", None)
+        if pool is None:
+            from .auth.pgstore import PostgresStore
+
+            pool = PostgresStore(settings.database_url).pool
+        repo = RecordRepo(kek, pg_pool=pool)
+    else:
+        path = str(Path(settings.db_path).expanduser().with_name("records.db")) if settings.db_path else ":memory:"
+        repo = RecordRepo(kek, sqlite_path=path)
+    return Records(PatientService(AsyncRecordRepo(repo)), local_mode)
+
+
+def build_server(
+    settings: Settings | None = None,
+    *,
+    store: Any = None,
+    http: Any = None,
+    local_mode: bool = False,
+    records: Records | None = None,
+) -> MCPServer:
     settings = settings or Settings()
     if store is None and (settings.auth_mode == "oauth" or settings.consult_limit_per_hour > 0):
         from .auth.store import open_store
 
         store = open_store(settings)
+    if records is None:
+        records = open_records(settings, local_mode=local_mode, store=store)
     kwargs = auth_kwargs(settings, store, http)
     mcp = MCPServer(
         name="medical-doctor",
@@ -148,7 +204,9 @@ def build_server(settings: Settings | None = None, *, store: Any = None, http: A
         **kwargs,
     )
     limiter = RateLimiter(settings.consult_limit_per_hour, store)
-    _register_tools(mcp, limiter)
+    _register_tools(mcp, limiter, settings, records)
+    register_record_tools(mcp, records)
+    register_order_tools(mcp, records)
     _register_routes(mcp, settings)
     if settings.auth_mode == "oauth":
         from .auth.oauth import register_login_routes
@@ -177,24 +235,30 @@ def _register_routes(mcp: MCPServer, settings: Settings) -> None:
         )
 
 
-def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
+def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, records: Records) -> None:
     # --- Safety ----------------------------------------------------------
 
-    @mcp.tool(annotations=READ_ONLY)
-    def red_flag_screen(text: str) -> dict[str, Any]:
-        """Deterministic emergency red-flag screen of free-text symptoms (stroke, ACS, sepsis, anaphylaxis,
-        suicide risk, obstetric and pediatric emergencies, etc.). Run this FIRST on any patient narrative.
-        Returns urgency (emergency|urgent|routine), matched red flags, and the immediate action to take."""
-        return safety.screen(text).to_dict()
+    @mcp.tool(annotations=READ_ONLY, title="Emergency red-flag screen")
+    async def red_flag_screen(text: Annotated[str, Field(max_length=MAX_CASE_CHARS)]) -> dict[str, Any]:
+        """Deterministic emergency red-flag screen of free-text symptoms (stroke, ACS, cardiac arrest, sepsis,
+        anaphylaxis, overdose, suicide risk, obstetric and pediatric emergencies, etc.). Run this FIRST on any
+        patient narrative. Returns urgency (emergency|urgent|routine), matched red flags, and the immediate action."""
+        return (await anyio.to_thread.run_sync(safety.screen, text)).to_dict()
 
     # --- Consult ---------------------------------------------------------
 
-    @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=True))
+    @mcp.tool(
+        annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=False, openWorldHint=True),
+        title="Attending physician consult",
+    )
     async def consult(
-        case: str,
+        case: Annotated[str, Field(max_length=MAX_CASE_CHARS)],
         ctx: Context,
-        question: str | None = None,
+        question: Annotated[str | None, Field(max_length=5_000)] = None,
         audience: Literal["clinician", "patient", "caregiver"] = "clinician",
+        patient_id: Annotated[str | None, Field(max_length=40, pattern=r"^pt_[A-Za-z0-9_-]+$")] = None,
+        provider: Literal["anthropic", "openai", "meta", "llama"] | None = None,
+        second_opinion: bool = False,
     ) -> dict[str, Any]:
         """Full attending-physician consult for adults AND children (Med-Peds attending: internal medicine +
         pediatrics, incl. neonates and adolescents). Give the whole case: age (days/months for infants), weight
@@ -203,23 +267,35 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
         Returns a structured consult note: urgency, problem representation, ranked differential with
         can't-miss diagnoses, recommended workup, evidence-cited management, and a patient explanation.
         audience='patient' tailors language for a layperson; 'caregiver' for a parent of a sick child.
-        Takes 30 s to a few minutes."""
+        patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
+        personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
+        is the server's). second_opinion=true runs the case past every configured provider and reconciles
+        their notes, listing disagreements. Takes 30 s to a few minutes."""
+        try:
+            who = current_principal(records.local_mode or settings.auth_mode == "none").owner
+        except AuthRequired:
+            who = "anonymous"
         user = current_user()
-        who = user.get("subject") or "anonymous"
-        triage = safety.screen(" ".join(filter(None, [case, question]))).to_dict()
+        triage = (await anyio.to_thread.run_sync(safety.screen, " ".join(filter(None, [case, question])))).to_dict()
         # Audit who/when/urgency only — never the clinical text (PHI).
-        audit.info("consult user=%s client=%s urgency=%s", who, user.get("client_id"), triage["urgency"])
-        if not physician.has_credentials():
+        audit.info("consult owner=%s client=%s urgency=%s chart=%s", who, user.get("client_id"), triage["urgency"], bool(patient_id))
+        chosen = provider or settings.llm_provider
+        if not physician.credentials_for(chosen):
             return {
                 "ok": False,
                 "red_flag_screen": triage,
-                "error": "No Anthropic credentials on the server (set ANTHROPIC_API_KEY). Falling back to protocol mode.",
+                "error": f"No {chosen} credentials on the server. Falling back to protocol mode.",
                 "protocol": physician.CHARTER,
                 "how_to_proceed": "Act as the attending yourself: follow `protocol`, load relevant skills with "
                 "get_skill, and call this server's calculator/drug/PubMed tools to verify every number and claim.",
                 "disclaimer": DISCLAIMER,
             }
-        limiter.check(who)
+        chart_summary = None
+        if patient_id:
+            from .records.service import summarize
+
+            chart_summary = summarize(await records.chart(patient_id, purpose="consult"))
+        await limiter.check(who)
 
         async def progress(step: int, message: str) -> None:
             try:
@@ -234,7 +310,11 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
             triage=triage,
             tools=await physician_tools(),
             execute_tool=execute_for_physician,
+            settings=settings,
+            chart_summary=chart_summary,
             progress=progress,
+            engine=physician.make_engine(settings, chosen),
+            second_opinion=second_opinion,
         )
         result["red_flag_screen"] = triage
         result["disclaimer"] = DISCLAIMER
@@ -250,14 +330,21 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
     async def execute_for_physician(name: str, arguments: dict[str, Any]) -> str:
         if name in _NOT_FOR_PHYSICIAN:
             raise ToolError(f"{name} is not available inside a consult")
+        if name in ("draft_prescription", "draft_referral"):
+            arguments = {**arguments, "save": False}  # the model may draft, only the user saves to the chart
         result = await mcp.call_tool(name, arguments)
         if getattr(result, "structured_content", None):
             text = json.dumps(result.structured_content)
         else:
             text = "\n".join(c.text for c in getattr(result, "content", []) if isinstance(c, TextContent))
         if getattr(result, "is_error", False):
-            raise ToolError(text)
-        return text
+            raise ToolError(text[:2_000])
+        if len(text) > MAX_TOOL_OUTPUT_CHARS:
+            text = text[:MAX_TOOL_OUTPUT_CHARS] + " …[truncated]"
+        # Third-party content (FDA labels, abstracts) is evidence, never instructions.
+        text = text.replace("</tool_output>", "</ tool_output>")
+        return f'<tool_output tool="{name}" trust="untrusted">\n{text}\n</tool_output>'
+
 
     # Exposed for tests and embedding.
     mcp.physician_tools = physician_tools  # type: ignore[attr-defined]
@@ -288,7 +375,9 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
         return await sources.drug_label(drug, sections)
 
     @mcp.tool(annotations=READ_ONLY_WEB)
-    async def drug_interaction_check(drugs: list[str]) -> dict[str, Any]:
+    async def drug_interaction_check(
+        drugs: Annotated[list[Annotated[str, Field(max_length=120)]], Field(min_length=2, max_length=sources.MAX_INTERACTION_DRUGS)],
+    ) -> dict[str, Any]:
         """Pairwise drug-drug interaction screen from each drug's FDA label Drug Interactions section.
         Provide 2+ generic or brand names. Absence of a finding does not prove safety."""
         return await sources.drug_interactions(drugs)
@@ -380,6 +469,30 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter) -> None:
             f"<age>{age}</age>\n<weight_kg>{weight_kg}</weight_kg>\n<case>\n{case}\n</case>"
         )
 
+    @mcp.prompt(name="personal_doctor_visit", description="A visit with your personal doctor: chart review, focused history, updates, plan and calls to action.")
+    def personal_doctor_visit_prompt(patient_id: str, concern: str = "") -> str:
+        return (
+            "You are this patient's personal doctor. Load the `personal-doctor` and `prescribing-and-referral` skills "
+            "with get_skill. 1) red_flag_screen the concern. 2) patient_chart (summary_only=false) and review it: "
+            "allergies, medicines, problems, recent results, open care-plan items. 3) Ask focused follow-up questions "
+            "a few at a time. 4) Record confirmed new facts with patient_update and add a short visit note. "
+            "5) consult with patient_id for the assessment. 6) For treatment or specialist care, create drafts with "
+            "draft_prescription / draft_referral (patient_id, save=true) and present them as calls to action for a "
+            "licensed clinician. 7) Close with safety-net advice and preventive_care_due items that are due.\n\n"
+            f"<patient_id>{patient_id}</patient_id>\n<concern>\n{concern}\n</concern>"
+        )
+
+    @mcp.prompt(name="patient_intake", description="Build a new patient chart (you or a family member) through a guided intake interview.")
+    def patient_intake_prompt(who: str = "myself") -> str:
+        return (
+            "Run a warm, efficient new-patient intake following the `personal-doctor` skill (get_skill). "
+            "Create the profile with patient_create, then collect allergies (with reactions), medicines, conditions, "
+            "surgeries, family history, social history, immunizations and recent results, a few questions at a time, "
+            "saving each confirmed answer with patient_update. Explain that the chart is encrypted, private to this "
+            "account, and can be exported or erased at any time. Finish with preventive_care_due.\n\n"
+            f"<patient>{who}</patient>"
+        )
+
     @mcp.prompt(name="medication_review", description="Comprehensive medication review (interactions, renal dosing, Beers, deprescribing).")
     def medication_review_prompt(medications: str, patient_context: str = "") -> str:
         return (
@@ -444,5 +557,6 @@ async def _fetch(id: str) -> dict[str, Any]:
     raise ToolError("id must start with skill:, calc: or pubmed:")
 
 
-# Default server (no auth): used by stdio, tests, and in-process embedding.
-mcp = build_server()
+# Default in-process server (no auth, single local user, in-memory records): tests and embedding.
+# The CLI builds its own from environment settings.
+mcp = build_server(local_mode=True)

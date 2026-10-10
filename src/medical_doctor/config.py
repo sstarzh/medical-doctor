@@ -58,7 +58,24 @@ class Settings:
     jwt_trust_unverified_email: bool = False
     cors_origins: tuple[str, ...] = ("*",)
     allowed_hosts: tuple[str, ...] = ()
-    consult_limit_per_hour: int = 0
+    consult_limit_per_hour: int = 20
+    # Consult model providers
+    llm_provider: str = "anthropic"  # anthropic | openai | meta | llama
+    llm_model: str = ""  # empty = provider default
+    llm_effort: str = "high"
+    provider_models: dict[str, str] = field(default_factory=dict)  # per-provider model overrides
+    second_opinion_providers: tuple[str, ...] = ()
+    openai_reasoning_effort: str = ""
+    meta_base_url: str = "https://api.meta.ai/v1"  # Meta Model API (Muse Spark)
+    llama_base_url: str = ""  # any OpenAI-compatible open-weight Llama host (Together, Groq, vLLM, ...)
+    web_search: bool = True
+    consult_max_rounds: int = 12
+    consult_timeout: float = 270.0  # under Vercel's 300 s function limit
+    max_case_chars: int = 50_000
+    # Personal health record
+    data_keys: str = ""  # MEDICAL_DOCTOR_DATA_KEYS ("kid:base64key,..."); first is active
+    allow_unauthenticated: bool = False  # explicit opt-in to serve a non-local deployment without auth
+    on_vercel: bool = False
 
     @property
     def resource_url(self) -> str:
@@ -171,9 +188,35 @@ def load_settings() -> Settings:
         jwt_trust_unverified_email=_flag("MEDICAL_DOCTOR_JWT_TRUST_UNVERIFIED_EMAIL"),
         cors_origins=tuple(_list("MEDICAL_DOCTOR_CORS_ORIGINS") or ["*"]),
         allowed_hosts=tuple(_list("MEDICAL_DOCTOR_ALLOWED_HOSTS")),
-        consult_limit_per_hour=int(e("MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR", "0")),
+        consult_limit_per_hour=int(e("MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR", "20")),
+        allow_unauthenticated=_flag("MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED"),
+        llm_provider=e("MEDICAL_DOCTOR_PROVIDER", "anthropic").strip().lower(),
+        llm_model=e("MEDICAL_DOCTOR_MODEL", ""),
+        llm_effort=e("MEDICAL_DOCTOR_EFFORT", "high"),
+        provider_models={
+            k: v for k, v in {
+                "anthropic": e("MEDICAL_DOCTOR_ANTHROPIC_MODEL", ""),
+                "openai": e("MEDICAL_DOCTOR_OPENAI_MODEL", ""),
+                "meta": e("MEDICAL_DOCTOR_META_MODEL", ""),
+                "llama": e("MEDICAL_DOCTOR_LLAMA_MODEL", ""),
+            }.items() if v
+        },
+        second_opinion_providers=tuple(x.lower() for x in _list("MEDICAL_DOCTOR_SECOND_OPINION")),
+        openai_reasoning_effort=e("MEDICAL_DOCTOR_OPENAI_REASONING_EFFORT", ""),
+        meta_base_url=e("MEDICAL_DOCTOR_META_BASE_URL", "https://api.meta.ai/v1"),
+        llama_base_url=e("MEDICAL_DOCTOR_LLAMA_BASE_URL", ""),
+        web_search=_flag("MEDICAL_DOCTOR_WEB_SEARCH", True),
+        consult_max_rounds=int(e("MEDICAL_DOCTOR_MAX_TOOL_ROUNDS", "12")),
+        consult_timeout=float(e("MEDICAL_DOCTOR_CONSULT_TIMEOUT", "270")),
+        data_keys=e("MEDICAL_DOCTOR_DATA_KEYS", ""),
+        on_vercel=bool(e("VERCEL")),
     )
     validate(s)
+    if s.on_vercel and s.auth_mode == "none" and not s.allow_unauthenticated:
+        raise ValueError(
+            "Refusing to serve a public deployment without authentication (anyone could run paid consults). "
+            "Set MEDICAL_DOCTOR_AUTH=oauth|jwt|apikey, or MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED=1 if you really mean it"
+        )
     if e("VERCEL") and s.auth_mode == "oauth" and not s.database_url:
         raise ValueError(
             "On Vercel the local disk is temporary and per-instance: set POSTGRES_URL (Supabase pooled "
@@ -182,7 +225,26 @@ def load_settings() -> Settings:
     return s
 
 
+PROVIDERS = ("anthropic", "openai", "meta", "llama")
+
+
+def is_training_model(model: str) -> bool:
+    """Meta Model API '*-contributor' models share traffic with Meta for product improvement."""
+    return "contributor" in model.lower()
+
+
 def validate(s: Settings) -> None:
+    for p in (s.llm_provider, *s.second_opinion_providers):
+        if p not in PROVIDERS:
+            raise ValueError(f"Unknown model provider {p!r}: use {', '.join(PROVIDERS)}")
+        if p == "llama" and not s.llama_base_url:
+            raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL (an OpenAI-compatible Llama host)")
+    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items()]:
+        if p == "meta" and model and is_training_model(model):
+            raise ValueError(
+                f"Meta model {model!r} is a '-contributor' variant: Meta uses its traffic to improve its products, "
+                "so it must never receive patient data. Use the standard model ID (e.g. muse-spark-1.3)"
+            )
     if s.auth_mode == "none":
         return
     if not s.public_url:
@@ -205,3 +267,13 @@ def validate(s: Settings) -> None:
             )
     if s.auth_mode == "jwt" and not s.jwt_issuer:
         raise ValueError("MEDICAL_DOCTOR_AUTH=jwt requires MEDICAL_DOCTOR_JWT_ISSUER")
+
+
+def assert_safe_exposure(settings: Settings, host: str) -> None:
+    """A network-reachable server without authentication lets anyone spend the model budget."""
+    loopback = host in ("127.0.0.1", "localhost", "::1")
+    if not loopback and settings.auth_mode == "none" and not settings.allow_unauthenticated:
+        raise ValueError(
+            f"Refusing to listen on {host} without authentication. Set MEDICAL_DOCTOR_AUTH=oauth|jwt|apikey "
+            "(see README), or MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED=1 for a trusted private network"
+        )

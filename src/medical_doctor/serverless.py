@@ -21,8 +21,10 @@ log = logging.getLogger("medical_doctor")
 
 
 class LazyLifespanApp:
-    def __init__(self, factory: Callable[[], Any]):
+    def __init__(self, factory: Callable[[], Any], on_shutdown: Callable[[], None] | None = None):
         self._factory = factory
+        self._on_shutdown = on_shutdown
+        self._stop: asyncio.Event | None = None
         self._app: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ready: asyncio.Event | None = None
@@ -47,6 +49,7 @@ class LazyLifespanApp:
                 return
             app = self._factory()  # session managers are single-use: new loop, new app
             ready, stop = asyncio.Event(), asyncio.Event()
+            self._stop = stop
             inner = self._starlette(app)
 
             async def run() -> None:
@@ -74,6 +77,12 @@ class LazyLifespanApp:
                         return
                     await send({"type": "lifespan.startup.complete"})
                 elif message["type"] == "lifespan.shutdown":
+                    if self._stop is not None:
+                        self._stop.set()
+                    if self._runner is not None:
+                        await asyncio.wait({self._runner}, timeout=5)
+                    if self._on_shutdown:
+                        self._on_shutdown()
                     await send({"type": "lifespan.shutdown.complete"})
                     return
         await self._ensure_started()
@@ -86,4 +95,22 @@ def create_serverless_app(settings: Any = None) -> ASGIApp:
 
     settings = settings or load_settings()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    return LazyLifespanApp(lambda: create_app(settings, host="0.0.0.0", stateless=True))
+    # Database pools are created ONCE per process and shared by every per-event-loop app rebuild;
+    # psycopg's sync pool is not bound to an event loop. (Re-creating them per loop leaked
+    # Postgres connections and pool threads on Vercel.)
+    store = None
+    if settings.auth_mode == "oauth" or settings.consult_limit_per_hour > 0:
+        from .auth.store import open_store
+
+        store = open_store(settings)
+    from .server import open_records
+
+    records = open_records(settings, local_mode=False, store=store)
+
+    def close() -> None:
+        if hasattr(store, "close"):
+            store.close()
+
+    return LazyLifespanApp(
+        lambda: create_app(settings, host="0.0.0.0", stateless=True, store=store, records=records), on_shutdown=close
+    )
