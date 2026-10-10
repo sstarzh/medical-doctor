@@ -19,7 +19,7 @@ from mcp_types import TextContent, ToolAnnotations
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from . import __version__, calculators, pediatric, physician, safety, sources
+from . import __version__, calculators, consult_note, pediatric, physician, safety, sources
 from .config import Settings
 from .identity import AuthRequired, current_principal
 from .records_tools import RECORD_TOOLS, Records, register_order_tools, register_record_tools
@@ -270,7 +270,10 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         patient_id: include that patient's encrypted chart (history, medicines, allergies, results) — the
         personal-doctor mode. provider: which model family runs the consult (anthropic|openai|meta|llama; default
         is the server's). second_opinion=true runs the case past every configured provider and reconciles
-        their notes, listing disagreements. Takes 30 s to a few minutes."""
+        their notes, listing disagreements. Takes 30 s to a few minutes.
+        Result: `note` (Markdown), `structured` (urgency — never below the red-flag screen —, differential with
+        can't-miss flags, evaluation, management, drafts, missing information, citations) and `citation_check`
+        (each PMID looked up in PubMed: verified / mismatch / not_found / unchecked)."""
         try:
             who = current_principal(records.local_mode or settings.auth_mode == "none").owner
         except AuthRequired:
@@ -389,6 +392,17 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
         """Search PubMed. high_quality_only restricts to systematic reviews, meta-analyses, RCTs and guidelines.
         Returns PMIDs, titles, journals, dates and URLs. Use pubmed_abstract to read one."""
         return await sources.pubmed_search(query, max_results, high_quality_only, since_year)
+
+    @mcp.tool(annotations=READ_ONLY_WEB, title="Verify citations")
+    async def verify_citations(text: Annotated[str, Field(max_length=MAX_CASE_CHARS)]) -> dict[str, Any]:
+        """Check the references in a clinical text (e.g. a consult note you or another model wrote): every
+        PMID is looked up in PubMed and marked verified / mismatch (real article on a different topic —
+        likely a wrong or invented ID) / not_found / unchecked; links are marked by whether they point to a
+        recognised guideline or journal publisher. Use before relying on a model-written reference."""
+        from . import citations
+
+        markdown, structured = consult_note.structure(text)
+        return await citations.verify(markdown, structured)
 
     @mcp.tool(annotations=READ_ONLY_WEB)
     async def pubmed_abstract(pmid: str) -> dict[str, Any]:

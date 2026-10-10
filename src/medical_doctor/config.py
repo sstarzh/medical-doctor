@@ -69,6 +69,7 @@ class Settings:
     meta_base_url: str = "https://api.meta.ai/v1"  # Meta Model API (Muse Spark)
     llama_base_url: str = ""  # any OpenAI-compatible open-weight Llama host (Together, Groq, vLLM, ...)
     web_search: bool = True
+    verify_citations: bool = True
     consult_max_rounds: int = 12
     consult_timeout: float = 270.0  # under Vercel's 300 s function limit
     max_case_chars: int = 50_000
@@ -206,6 +207,7 @@ def load_settings() -> Settings:
         meta_base_url=e("MEDICAL_DOCTOR_META_BASE_URL", "https://api.meta.ai/v1"),
         llama_base_url=e("MEDICAL_DOCTOR_LLAMA_BASE_URL", ""),
         web_search=_flag("MEDICAL_DOCTOR_WEB_SEARCH", True),
+        verify_citations=_flag("MEDICAL_DOCTOR_VERIFY_CITATIONS", True),
         consult_max_rounds=int(e("MEDICAL_DOCTOR_MAX_TOOL_ROUNDS", "12")),
         consult_timeout=float(e("MEDICAL_DOCTOR_CONSULT_TIMEOUT", "270")),
         data_keys=e("MEDICAL_DOCTOR_DATA_KEYS", ""),
