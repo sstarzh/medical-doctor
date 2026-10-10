@@ -6,6 +6,7 @@ arguments, so one account can never read or write another account's charts.
 
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import date
 from typing import Any
@@ -234,11 +235,8 @@ def summarize(chart: dict[str, Any], today: date | None = None) -> str:
     items("immunizations", lambda i: i["vaccine"] + (f" {i['date']}" if i.get("date") else ""))
     items("procedures", lambda x: x["name"] + (f" {x['date']}" if x.get("date") else ""))
     items("family_history", lambda f: f"{f['relation']}: {f['condition']}" + (f" (onset {f['age_at_onset']})" if f.get("age_at_onset") else ""))
-    obs = sorted(chart.get("observations", []), key=lambda o: o.get("date") or "", reverse=True)[:25]
-    if obs:
-        lines.append("Recent observations: " + "; ".join(
-            f"{o['name']} {o['value']}{(' ' + o['unit']) if o.get('unit') else ''}" + (f" ({o['date']})" if o.get("date") else "")
-            for o in obs))
+    if trends := observation_trends(chart.get("observations", [])):
+        lines.append("Results and trends (oldest → newest): " + "; ".join(trends))
     s = chart.get("social_history", {})
     social = [f"{k.replace('_', ' ')}: {v}" for k, v in s.items() if k != "sexual_history"]
     if social:
@@ -246,10 +244,37 @@ def summarize(chart: dict[str, Any], today: date | None = None) -> str:
     plan = [c for c in chart.get("care_plan", []) if c.get("status") in ("proposed", "accepted")]
     if plan:
         lines.append("Open care plan: " + "; ".join(f"{c['kind']}: {c['summary']}" for c in plan))
-    notes = chart.get("notes", [])[-3:]
+    notes = sorted(chart.get("notes", []), key=lambda n: n.get("date") or "")[-3:]
     if notes:
-        lines.append("Recent notes: " + " | ".join(f"{n.get('date', '')} {n['title']}: {n['text'][:400]}" for n in notes))
+        lines.append("Recent visits: " + " | ".join(f"{n.get('date', '')} {n['title']}: {n['text'][:600]}" for n in notes))
     return "\n".join(lines)
+
+
+def _number(value: Any) -> float | None:
+    m = re.match(r"\s*[<>]?\s*(-?\d+(?:\.\d+)?)", str(value))
+    return float(m.group(1)) if m else None
+
+
+def observation_trends(observations: list[dict[str, Any]], max_series: int = 25, points: int = 4) -> list[str]:
+    """One line per measurement: the last few values with dates and the direction of change, e.g.
+    'HbA1c %: 7.2 (2025-01-10) → 7.6 (2025-04-02) → 8.1 (2025-07-15) ↑'. Most recently measured first."""
+    series: dict[str, list[dict[str, Any]]] = {}
+    for o in observations:
+        series.setdefault(" ".join(str(o.get("name", "")).lower().split()), []).append(o)
+    out = []
+    for rows in series.values():
+        rows.sort(key=lambda o: o.get("date") or "")
+        last = rows[-points:]
+        unit = next((o.get("unit") for o in reversed(last) if o.get("unit")), "")
+        vals = " → ".join(f"{o['value']}" + (f" ({o['date']})" if o.get("date") else "") for o in last)
+        arrow = ""
+        nums = [_number(o["value"]) for o in last]
+        if len(nums) >= 2 and None not in nums[-2:] and "/" not in str(last[-1]["value"]):
+            delta = nums[-1] - nums[-2]  # type: ignore[operator]
+            arrow = " ↑" if delta > 0 else " ↓" if delta < 0 else " →"
+        out.append((last[-1].get("date") or "", f"{last[-1]['name']}{(' ' + unit) if unit else ''}: {vals}{arrow}"))
+    out.sort(key=lambda x: x[0], reverse=True)
+    return [line for _, line in out[:max_series]]
 
 
 def to_fhir_bundle(chart: dict[str, Any]) -> dict[str, Any]:

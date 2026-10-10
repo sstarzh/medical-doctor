@@ -153,7 +153,7 @@ def test_summary_and_fhir_export():
     from datetime import date
 
     text = summarize(chart, today=date(2025, 1, 15))
-    assert "1.0 y" in text and "amoxicillin (allergy, anaphylaxis)" in text and "eGFR 95" in text
+    assert "1.0 y" in text and "amoxicillin (allergy, anaphylaxis)" in text and "eGFR: 95 (2025-01-01)" in text
     bundle = to_fhir_bundle(chart)
     types = [e["resource"]["resourceType"] for e in bundle["entry"]]
     assert bundle["resourceType"] == "Bundle" and types[0] == "Patient" and "AllergyIntolerance" in types
@@ -193,3 +193,20 @@ async def test_record_tools_need_personal_identity(monkeypatch):
     async with Client(mcp) as c:
         r = await c.call_tool("patient_list", {})
         assert r.is_error and "personal sign-in" in r.content[0].text
+
+
+def test_summary_shows_trends_and_recent_visits():
+    from medical_doctor.records.service import observation_trends
+
+    obs = [{"name": "HbA1c", "value": "7.2", "unit": "%", "date": "2025-01-10"},
+           {"name": "hba1c", "value": "8.1", "unit": "%", "date": "2025-07-15"},
+           {"name": "HbA1c", "value": "7.6", "date": "2025-04-02"},
+           {"name": "blood pressure", "value": "142/88", "date": "2025-07-01"}]
+    lines = observation_trends(obs)
+    assert lines[0].endswith("7.2 (2025-01-10) → 7.6 (2025-04-02) → 8.1 (2025-07-15) ↑") and "%" in lines[0]
+    assert lines[1] == "blood pressure: 142/88 (2025-07-01)"
+    chart = {"profile": {}, "observations": obs, "notes": [
+        {"title": "Consult: cough", "text": "better", "date": "2025-05-01"},
+        {"title": "Consult: knee", "text": "pain", "date": "2025-08-01"}]}
+    text = summarize(chart)
+    assert "Recent visits: 2025-05-01 Consult: cough" in text and text.index("cough") < text.index("knee")

@@ -335,15 +335,14 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 "disclaimer": DISCLAIMER,
             }
 
-        async def load_summary() -> str | None:
-            if not chart.patient_id:
-                return None
-            from .records.service import summarize
-
-            return summarize(await records.chart(chart.patient_id, purpose="consult"))
+        async def load_chart() -> dict[str, Any] | None:
+            return await records.chart(chart.patient_id, purpose="consult") if chart.patient_id else None
 
         # Independent setup steps run concurrently (each is a database or registry round trip).
-        chart_summary, _, tools = await asyncio.gather(load_summary(), limiter.check(who), physician_tools())
+        chart_data, _, tools = await asyncio.gather(load_chart(), limiter.check(who), physician_tools())
+        from .records.service import summarize
+
+        chart_summary = summarize(chart_data) if chart_data else None
 
         async def progress(step: int, message: str) -> None:
             try:
@@ -351,7 +350,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             except Exception:  # progress is best-effort (client may not send a progress token)
                 pass
 
-        engine = physician.make_engine(settings, chosen, depth)
+        engine = physician.make_engine(settings, chosen, depth, triage["urgency"])
         started = time.monotonic()
         with consult_span(engine.provider, engine.model, **{"medical_doctor.chart": bool(chart.patient_id),
                                                              "medical_doctor.second_opinion": second_opinion}) as span:
@@ -368,6 +367,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
                 engine=engine,
                 second_opinion=second_opinion,
                 depth=depth,
+                chart=chart_data,
             )
             result["depth"] = depth or settings.consult_depth
             record_consult(span, result, time.monotonic() - started)

@@ -8,6 +8,8 @@ OpenAI-compatible host.
 from __future__ import annotations
 
 import asyncio
+import re
+import json
 import os
 from typing import Any, Literal
 
@@ -34,16 +36,23 @@ def _env_key(names: tuple[str, ...]) -> str:
 Depth = Literal["quick", "standard", "thorough"]
 
 
-def depth_profile(settings: Settings, depth: str | None) -> dict[str, Any]:
+def depth_profile(settings: Settings, depth: str | None, urgency: str | None = None) -> dict[str, Any]:
     """Latency/thoroughness trade-off. Wall-clock is dominated by sequential tool rounds and
     reasoning effort, so `quick` caps both; the safety layers (red-flag screen, urgency floor,
-    deterministic draft checks, citation check) run at every depth."""
-    depth = depth or settings.consult_depth
-    return {
+    deterministic self-check, draft checks, citation check) run at every depth.
+
+    Auto-escalation: when the caller did not choose a depth and the red-flag screen says "urgent",
+    reasoning effort is raised to high (same round cap, so latency grows modestly). Emergencies are
+    NOT escalated: their first instruction is "get emergency care now", and speed matters more."""
+    chosen = depth or settings.consult_depth
+    prof = {
         "quick": {"effort": "low", "max_rounds": 4, "web_searches": 0},
         "standard": {"effort": settings.llm_effort, "max_rounds": min(8, settings.consult_max_rounds), "web_searches": 2},
         "thorough": {"effort": "high", "max_rounds": settings.consult_max_rounds, "web_searches": 5},
-    }[depth] | {"depth": depth}
+    }[chosen] | {"depth": chosen, "escalated": False}
+    if depth is None and urgency == "urgent" and prof["effort"] in ("low", "medium"):
+        prof.update(effort="high", escalated=True)
+    return prof
 
 
 CORE_SKILLS = ("clinical-reasoning", "emergency-triage", "prescribing-and-referral")
@@ -172,13 +181,13 @@ def has_credentials(settings: Settings | None = None) -> bool:
     return credentials_for((settings or Settings()).llm_provider)
 
 
-def make_engine(settings: Settings, provider: str | None = None, depth: str | None = None) -> Engine:
+def make_engine(settings: Settings, provider: str | None = None, depth: str | None = None, urgency: str | None = None) -> Engine:
     provider = provider or settings.llm_provider
     model = (settings.llm_model if provider == settings.llm_provider else "") or settings.provider_models.get(provider) or DEFAULT_MODELS[provider]
     if provider == "anthropic":
         from .llm.anthropic_engine import AnthropicEngine
 
-        prof = depth_profile(settings, depth)
+        prof = depth_profile(settings, depth, urgency)
         return AnthropicEngine(
             model=model, effort=prof["effort"], web_search=settings.web_search and prof["web_searches"] > 0,
             web_search_uses=prof["web_searches"], fast=settings.fast_mode,
@@ -200,6 +209,21 @@ def make_engine(settings: Settings, provider: str | None = None, depth: str | No
             raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL")
         return OpenAICompatEngine(provider="llama", model=model, api_key=_env_key(LLAMA_KEY_VARS), base_url=settings.llama_base_url)
     raise ValueError(f"Unknown provider {provider!r}")
+
+
+REVIEWER_MODEL = "claude-fable-5-1"
+
+
+def reviewer_engine(settings: Settings) -> Engine:
+    """The independent reviewer for second opinions: the most capable Claude model at high effort.
+    Falls back to Opus if the account cannot use it (e.g. zero-data-retention orgs)."""
+    from .llm.anthropic_engine import AnthropicEngine
+
+    return AnthropicEngine(
+        model=settings.second_opinion_model or REVIEWER_MODEL, effort="high",
+        web_search=False,  # PubMed/label tools cover evidence; keeps the reviewer on supported tool types
+        fast=False, fallback_model=DEFAULT_MODELS["anthropic"],
+    )
 
 
 def skills_for(engine: Engine, case: str) -> str:
@@ -229,10 +253,12 @@ async def run_consult(
     engine: Engine | None = None,
     second_opinion: bool = False,
     depth: str | None = None,
+    chart: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = settings or Settings()
-    engine = engine or make_engine(settings, depth=depth)
-    profile = depth_profile(settings, depth)
+    profile = depth_profile(settings, depth, triage.get("urgency"))
+    engine = engine or make_engine(settings, depth=depth, urgency=triage.get("urgency"))
+    deadline = asyncio.get_running_loop().time() + settings.consult_timeout
     prompt = build_case_prompt(case, question, audience, triage, chart_summary)
 
     def run_for(e: Engine, prog: Progress | None) -> ConsultRun:
@@ -246,6 +272,9 @@ async def run_consult(
         for name in settings.second_opinion_providers:
             if name != engine.provider and credentials_for(name):
                 panel.append(make_engine(settings, name, depth))
+        if len(panel) == 1 and credentials_for("anthropic"):
+            # No other provider configured: the second opinion comes from the most capable Claude model.
+            panel.append(reviewer_engine(settings))
 
     try:
         async with asyncio.timeout(settings.consult_timeout):
@@ -275,7 +304,9 @@ async def run_consult(
                 elif not primary.ok and good:
                     result.update({"ok": True, "note": good[0].note, "provider": good[0].provider, "model": good[0].model})
             if result.get("ok") and result.get("note"):
-                await _finish_note(result, triage, settings, progress)
+                await _finish_note(result, triage, settings, progress, engine=engine, prompt=prompt,
+                                   chart=chart, deadline=deadline)
+            result["escalated"] = profile["escalated"]
             return result
     except TimeoutError:
         return {
@@ -286,17 +317,65 @@ async def run_consult(
         }
 
 
-async def _finish_note(result: dict[str, Any], triage: dict[str, Any], settings: Settings, progress: Progress | None) -> None:
-    """Split out the machine-readable summary and check the note's citations against PubMed."""
-    result["note"], result["structured"] = structure(result["note"], triage)
+async def _check_citations(result: dict[str, Any], settings: Settings) -> None:
     if not settings.verify_citations:
         return
     from .citations import verify
 
-    if progress:
-        await progress(100, "Verifying citations")
     try:
         async with asyncio.timeout(15):
             result["citation_check"] = await verify(result["note"], result["structured"])
     except TimeoutError:
         result["citation_check"] = {"error": "citation check timed out; citations are unverified"}
+
+
+REVISION_MIN_SECONDS = 25
+
+
+async def _finish_note(
+    result: dict[str, Any], triage: dict[str, Any], settings: Settings, progress: Progress | None, *,
+    engine: Engine | None = None, prompt: str = "", chart: dict[str, Any] | None = None, deadline: float | None = None,
+) -> None:
+    """Structure the note, verify citations, self-check it (deterministic, milliseconds), and when a
+    CRITICAL finding remains and time allows, revise it once with the findings (one completion call)."""
+    from .quality import REVISION_PROMPT, review
+
+    result["note"], result["structured"] = structure(result["note"], triage)
+    if progress:
+        await progress(100, "Verifying citations and safety-checking the note")
+    await _check_citations(result, settings)
+    check = review(result["structured"], result["note"], triage, chart, result.get("citation_check"))
+    result["self_check"] = check
+    if not check["critical"] or engine is None:
+        return
+    remaining = (deadline - asyncio.get_running_loop().time() - 5) if deadline else 60
+    if remaining < REVISION_MIN_SECONDS:
+        check["revision"] = "skipped: not enough time left in the consult budget"
+        return
+    critical = [f for f in check["findings"] if f["severity"] == "critical"]
+    findings = "\n".join(f"- [{f['check']}] {f['detail']}" for f in critical)
+    original_note, original_structured = result["note"], result["structured"]
+    try:
+        async with asyncio.timeout(remaining):
+            if progress:
+                await progress(101, "Correcting the note after the safety check")
+            revised = await engine.complete(
+                CHARTER + "\n\n" + REVISION_PROMPT.format(findings=findings),
+                f"{prompt}\n\n<consult_note>\n{_escape(original_note, 'consult_note')}\n"
+                f"```json\n{json.dumps(original_structured)}\n```\n</consult_note>",
+            )
+    except Exception as exc:  # keep the original note and report the findings
+        check["revision"] = f"failed ({type(exc).__name__}); findings stand"
+        return
+    note, structured = structure(revised, triage)
+    after = review(structured, note, triage, chart, result.get("citation_check"))
+    if after["critical"] < check["critical"]:
+        result["note"], result["structured"] = note, structured
+        new_pmids = set(re.findall(r"\d{5,9}", note)) - set(re.findall(r"\d{5,9}", original_note))
+        if new_pmids:
+            await _check_citations(result, settings)
+        after["revision"] = "revised"
+        after["before_revision"] = check["findings"]
+        result["self_check"] = after
+    else:
+        check["revision"] = "attempted; kept the original note (revision did not resolve the findings)"
