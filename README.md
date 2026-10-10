@@ -118,8 +118,9 @@ docker build -t medical-doctor-mcp .
 docker run -p 8000:8000 -v md-data:/data --env-file .env medical-doctor-mcp     # → https://<your-host>/mcp
 ```
 
+- **Vercel + Supabase (serverless):** see **[docs/DEPLOY-VERCEL.md](docs/DEPLOY-VERCEL.md)**. `app.py` is the Vercel entry point. Sign-in data lives in Supabase Postgres (set `POSTGRES_URL`), so it survives across serverless instances.
 - Put it behind HTTPS (Cloud Run, Fly.io, Render, ECS, or Kubernetes with an ingress).
-- The built-in OAuth store is SQLite, so run **one instance** with a persistent `/data` volume.
+- Without a database URL, the built-in OAuth store is SQLite, so run **one instance** with a persistent `/data` volume. With `POSTGRES_URL` or `MEDICAL_DOCTOR_DATABASE_URL` (Supabase, Neon, RDS, …), you can run any number of instances.
 - To scale out horizontally, use `MEDICAL_DOCTOR_AUTH=jwt` with an external authorization server, plus `MEDICAL_DOCTOR_STATELESS=1`.
 - For a quick test without deploying, run `cloudflared tunnel --url http://localhost:8000`.
 
@@ -153,7 +154,8 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_AUTH` | `none` | `none` / `apikey` / `oauth` / `jwt` (see Authentication) |
 | `MEDICAL_DOCTOR_PUBLIC_URL` | – | Public base URL; required when auth is on |
 | `MEDICAL_DOCTOR_CORS_ORIGINS` | `*` | Origins allowed for browser-based clients |
-| `MEDICAL_DOCTOR_STATELESS` | `0` | `1` for load-balanced or serverless deployments |
+| `MEDICAL_DOCTOR_STATELESS` | `0` | `1` for load-balanced or serverless deployments (always on in `app.py`) |
+| `POSTGRES_URL` / `MEDICAL_DOCTOR_DATABASE_URL` | – | Postgres for sign-in data (Supabase pooled URI); replaces the SQLite file |
 | `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | `0` (unlimited) | Per-user consult cap |
 
 The consult uses the server-side refusal fallback (`fallbacks: "default"`). If a safety classifier declines a legitimate clinical question, the request is retried on Anthropic's recommended fallback model. The whole skill library sits in a prompt-cached system block, so repeat consults pay roughly 10% of the input cost for it.
