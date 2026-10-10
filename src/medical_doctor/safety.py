@@ -121,7 +121,7 @@ RULES: tuple[RedFlagRule, ...] = (
             r"can'?t\s+(?:move|lift|feel)\s+(?:my|his|her|their)\s+(?:right|left)\s+(?:arm|leg|hand|side|foot)",
             r"(?:slurred|garbled)\s+speech|trouble\s+(?:speaking|talking|finding\s+words)|can'?t\s+(?:speak|talk)\b(?!\s+in\s+full)",
             r"(?:sudden|acute)\s+(?:loss\s+of\s+)?(?:vision|blindness)|sudden\s+(?:double\s+vision|loss\s+of\s+balance)",
-            r"\b(?:having|had)\s+(?:a\s+)?stroke\b|\bstroke\s+symptoms\b|\btia\b|mini[- ]stroke",
+            r"\b(?:having|had)\s+(?:a\s+)?stroke\b|\bstroke\s+symptoms\b|(?-i:\bTIA\b)|transient\s+isch(?:a)?emic\s+attack|mini[- ]stroke",
         ),
         CALL_EMS + " Note the last-known-well time: thrombolysis/thrombectomy are time-critical.",
     ),
