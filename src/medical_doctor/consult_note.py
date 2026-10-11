@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .cant_miss import flag as flag_cant_miss
+
 Urgency = Literal["emergency", "urgent", "soon", "routine"]
 URGENCY_RANK = {"routine": 0, "soon": 1, "urgent": 2, "emergency": 3}
 
@@ -227,6 +229,7 @@ def structure(note: str, triage: dict[str, Any] | None = None) -> tuple[str, dic
         out["model_urgency"] = out.get("urgency")
         out["urgency"] = screen
         out["urgency_overridden_by"] = "red_flag_screen"
+    flag_cant_miss(out, triage)
     return markdown, out
 
 

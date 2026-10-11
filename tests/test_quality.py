@@ -333,3 +333,65 @@ def test_cant_miss_words_do_not_match_inside_other_words():
     structured = {"source": "model", "urgency": "emergency", "differential": [{"diagnosis": "tension headache, often viral"}]}
     r = quality.review(structured, "often a viral rash", triage, None)
     assert any(f["check"] == "cant_miss" for f in r["findings"])
+
+
+def test_obstetric_red_flag_needs_a_specific_diagnosis_not_the_word_pregnancy():
+    # Eval case adult-ectopic: a note that only mentions "pregnancy" must not count as covering ectopic.
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "pregnancy", "condition": "Obstetric emergency"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Ovarian cyst"}], "urgency": "emergency"}
+    assert review(structured, "Possible early pregnancy; take a pregnancy test.", triage, None)["critical"] == 1
+    structured["differential"].append({"diagnosis": "Ectopic pregnancy"})
+    assert review(structured, "", triage, None)["critical"] == 0
+
+
+def test_cant_miss_must_be_in_the_differential_not_just_mentioned():
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "pregnancy", "condition": "Obstetric emergency"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Corpus luteum cyst"}], "urgency": "emergency"}
+    assert review(structured, "Ectopic pregnancy is unlikely given the history.", triage, None)["critical"] == 1
+    # No structured differential (summary missing): the prose is all there is to check.
+    assert review({"source": "fallback", "differential": []}, "Rule out ectopic pregnancy now.", triage, None)["critical"] == 0
+
+
+def test_red_flags_without_a_cant_miss_list_do_not_crash_the_review():
+    # Eval run 38165779624: 9 consults errored on screen rules such as altered_mental_status.
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "altered_mental_status"}, {"id": "acute_abdomen"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Delirium"}], "urgency": "emergency"}
+    assert review(structured, "note", triage, None)["critical"] == 0
+
+
+def test_listed_red_flag_diagnosis_is_marked_cant_miss_by_structure():
+    # Eval adult-ectopic (Meta): ectopic pregnancy listed without the flag. structure() sets it, so the
+    # consult and second_opinion tools agree; word-start matching keeps benign look-alikes unflagged.
+    import json
+
+    from medical_doctor.consult_note import structure
+
+    summary = {"urgency": "emergency", "differential": [
+        {"diagnosis": "Ectopic pregnancy", "likelihood": "possible", "cant_miss": False},
+        {"diagnosis": "Partial seizure", "likelihood": "unlikely"},
+        {"diagnosis": "Viral infection", "likelihood": "unlikely"}]}
+    triage = {"urgency": "emergency", "red_flags": [{"id": "pregnancy"}, {"id": "stroke"}, {"id": "hot_joint"}]}
+    _, s = structure("## Urgency\nEMERGENCY\n```json\n" + json.dumps(summary) + "\n```", triage)
+    flags = {d["diagnosis"]: d.get("cant_miss") for d in s["differential"]}
+    assert flags == {"Ectopic pregnancy": True, "Partial seizure": False, "Viral infection": False}
+
+
+def test_presentation_red_flags_are_not_forced_into_the_differential():
+    from medical_doctor.quality import review
+
+    # Suicide risk / airway: the danger is a presentation; a safety plan in the note covers it.
+    ddx = {"source": "model", "differential": [{"diagnosis": "Major depressive disorder, severe"}], "urgency": "emergency"}
+    triage = {"urgency": "emergency", "red_flags": [{"id": "suicide", "condition": "Suicide risk"}]}
+    assert review(ddx, "Immediate safety plan and crisis line.", triage, None)["critical"] == 0
+    # Obstetric presentations beyond ectopic (decreased fetal movement) are named diagnoses too.
+    ob = {"source": "model", "differential": [{"diagnosis": "Fetal compromise"}], "urgency": "emergency"}
+    assert review(ob, "", {"urgency": "emergency", "red_flags": [{"id": "pregnancy"}]}, None)["critical"] == 0
+    # Substrings no longer count as coverage: "tia" inside "Partial seizure" is not a stroke diagnosis.
+    st = {"source": "model", "differential": [{"diagnosis": "Partial seizure"}], "urgency": "emergency"}
+    assert review(st, "", {"urgency": "emergency", "red_flags": [{"id": "stroke"}]}, None)["critical"] == 1

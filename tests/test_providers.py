@@ -307,3 +307,84 @@ async def test_fast_mode_requests_and_falls_back_to_standard_speed():
     out = await e.consult(_run(echo))
     assert out.ok and calls[0]["speed"] == "fast" and "fast-mode-2026-02-01" in calls[0]["betas"]
     assert "speed" not in calls[1] and "fast-mode-2026-02-01" not in calls[1]["betas"]
+
+
+def test_meta_reasoning_effort_follows_the_consult_depth(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "x")
+    s = Settings(llm_provider="meta")
+    assert physician.make_engine(s, "meta", "quick").reasoning_effort == "low"
+    assert physician.make_engine(s, "meta", "standard").reasoning_effort == "medium"
+    assert physician.make_engine(Settings(llm_provider="meta", llm_effort="max"), "meta", "standard").reasoning_effort == "xhigh"
+
+
+class _Rejecting(FakeChat):
+    """Rejects requests whose reasoning_effort is in `bad` (400), or every request with `always`."""
+
+    def __init__(self, scripted, bad=(), always=False, status=400):
+        super().__init__(scripted)
+        self.bad, self.always, self.status = set(bad), always, status
+
+    async def _create(self, **kw):
+        if self.always or kw.get("reasoning_effort", "-") in self.bad:
+            self.calls.append({"rejected": kw.get("reasoning_effort")})
+            raise type("APIStatusError", (Exception,), {"status_code": self.status})("Unrecognized argument")
+        return await super()._create(**kw)
+
+
+async def test_openai_compat_steps_reasoning_effort_down_and_remembers_it():
+    from medical_doctor.llm import openai_compat
+
+    openai_compat._EFFORT_OVERRIDE.clear()
+    # xhigh rejected (any 400/422 wording) -> high works and is remembered for this host and model.
+    fake = _Rejecting([_choice(content="## Urgency\nROUTINE")], bad={"xhigh"}, status=422)
+    e = OpenAICompatEngine(provider="meta", model="m", api_key="x", base_url="https://h", client=fake, reasoning_effort="xhigh")
+    assert (await e.consult(_run(echo))).ok and e.reasoning_effort == "high"
+    again = OpenAICompatEngine(provider="meta", model="m", api_key="x", base_url="https://h", client=FakeChat([]), reasoning_effort="xhigh")
+    assert again.reasoning_effort == "high"  # no doomed first request on the next consult
+    # A rejected level with no lower one: dropped, remembered as None.
+    fake = _Rejecting([_choice(content="ok")], bad={"medium"})
+    e = OpenAICompatEngine(provider="meta", model="m2", api_key="x", client=fake, reasoning_effort="medium")
+    assert await e.complete("s", "p") == "ok" and e.reasoning_effort is None
+    # Failing even without the parameter: the original error is raised and the setting is kept.
+    e = OpenAICompatEngine(provider="meta", model="m3", api_key="x", client=_Rejecting([], always=True), reasoning_effort="low")
+    with pytest.raises(Exception, match="Unrecognized"):
+        await e.complete("s", "p")
+    assert e.reasoning_effort == "low" and ("", "m3") not in openai_compat._EFFORT_OVERRIDE
+    openai_compat._EFFORT_OVERRIDE.clear()
+
+
+def test_only_muse_spark_gets_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "x")
+    assert physician.make_engine(Settings(llm_provider="meta", llm_model="Llama-4-Maverick"), "meta", "standard").reasoning_effort is None
+
+async def test_consult_timing_describes_the_returned_note(monkeypatch):
+    monkeypatch.setattr(physician, "credentials_for", lambda p: p == "openai")
+    failed = StubEngine("anthropic", "", ok=False)
+    reviewer = StubEngine("openai", "## Urgency\nROUTINE\nReviewer note")
+    reviewer_out = await reviewer.consult(None)
+    reviewer_out.usage.rounds, reviewer_out.usage.model_seconds = 3, 12.5
+    monkeypatch.setattr(reviewer, "consult", lambda run: _ready(reviewer_out))
+    monkeypatch.setattr(physician, "make_engine", lambda *a, **kw: reviewer)
+    res = await physician.run_consult(case="x", question=None, audience="clinician", triage={}, tools=[], execute_tool=echo,
+                                      settings=Settings(verify_citations=False, second_opinion_providers=("openai",)),
+                                      engine=failed, second_opinion=True)
+    t = res["timing"]
+    assert res["provider"] == "openai" and t["rounds"] == 3 and t["model_seconds"] == 12.5
+    assert t["note_chars"] == len(reviewer_out.note) and {"synthesis_seconds", "finish_seconds", "total_seconds"} <= set(t)
+
+
+async def _ready(value):
+    return value
+
+
+def test_eval_latency_summary_and_render():
+    from medical_doctor.evals import latency_summary, render
+
+    rows = [{"id": "a", "pass": True, "score": 1.0, "checks": [], "seconds": 10.0,
+             "timing": {"rounds": 2, "model_seconds": 9.0, "tool_seconds": 0.5, "finish_seconds": 0.1, "output_tokens": 100}},
+            {"id": "b", "pass": False, "score": 0.0, "checks": [], "seconds": 30.0, "timing": None}]
+    lat = latency_summary(rows)
+    assert lat["mean_seconds"] == 20.0 and lat["max_seconds"] == 30.0 and lat["mean_rounds"] == 2.0
+    assert lat["mean_reasoning_tokens"] == 0  # missing keys count as zero, never KeyError
+    text = render({"kind": "consult", "cases": rows, "passed": 1, "total": 2, "mean_score": 0.5, "latency": lat})
+    assert "rounds 2, model 9.0s" in text and "latency: mean_seconds 20.0" in text

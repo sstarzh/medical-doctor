@@ -102,6 +102,11 @@ and trends, and follow up open care-plan items. Note any chart facts that look o
 
 12. Work efficiently: make independent tool calls together in one turn (e.g. all calculators and \
 label lookups at once), and stop gathering evidence once the answer is clear.
+13. Be concise: the reader needs the answer, not a textbook chapter. Aim for about 700 words for a \
+patient or caregiver and 1,000 for a clinician, plus the JSON block. Use short bullets, do not restate the \
+case, keep the differential to the 3-6 diagnoses that matter (every can't-miss one always included), cite \
+only the evidence that supports a recommendation, and leave out sections' boilerplate. Safety content \
+(urgency, can't-miss diagnoses, emergency signs) is never cut for length.
 
 Output format (Markdown, in this order)
 ## Urgency
@@ -233,7 +238,12 @@ def make_engine(
     if provider == "meta":
         if is_training_model(model):  # defence in depth; config.validate already refuses these
             raise ValueError(f"Refusing Meta '-contributor' model {model!r} for patient data")
-        return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url)
+        # Muse Spark always reasons; without reasoning_effort it chooses its own depth, and hidden reasoning
+        # was ~46% of its output. The consult depth sets it (unsupported values are dropped by the engine).
+        # Only Muse Spark takes it; Llama models on the Meta API get no reasoning parameter at all.
+        effort = {"max": "xhigh"}.get(e := depth_profile(settings, depth, urgency)["effort"], e) if model.startswith("muse") else None
+        return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url,
+                                  reasoning_effort=effort)
     if provider == "llama":
         if not settings.llama_base_url:
             raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL")
@@ -289,7 +299,9 @@ async def run_consult(
     settings = settings or Settings()
     profile = depth_profile(settings, depth, triage.get("urgency"))
     engine = engine or make_engine(settings, depth=depth, urgency=triage.get("urgency"))
-    deadline = asyncio.get_running_loop().time() + settings.consult_timeout
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    deadline = started + settings.consult_timeout
     prompt = build_case_prompt(case, question, audience, triage, chart_summary)
 
     def run_for(e: Engine, prog: Progress | None) -> ConsultRun:
@@ -313,6 +325,7 @@ async def run_consult(
             primary = outcomes[0]
             result = primary.as_dict()
             good = [o for o in outcomes if o.ok]
+            source, synthesis_started = primary, loop.time()
             if len(panel) > 1:
                 if panel_same_model:
                     result["same_model"] = True
@@ -335,10 +348,27 @@ async def run_consult(
                         result["synthesis_error"] = f"{type(exc).__name__}: {exc}"
                 elif not primary.ok and good:
                     result.update({"ok": True, "note": good[0].note, "provider": good[0].provider, "model": good[0].model})
+                    source = good[0]
+            finish_started = loop.time()
             if result.get("ok") and result.get("note"):
                 await _finish_note(result, triage, settings, progress, engine=engine, prompt=prompt,
                                    chart=chart, deadline=deadline)
             result["escalated"] = profile["escalated"]
+            # Where the time went (no clinical content), for the outcome whose note was returned:
+            # its model rounds and tools, the panel synthesis, then citations/self-check/revision.
+            u = source.usage
+            result["timing"] = {
+                "total_seconds": round(loop.time() - started, 1),
+                "model_seconds": round(u.model_seconds, 1),
+                "tool_seconds": round(u.tool_seconds, 1),
+                "synthesis_seconds": round(finish_started - synthesis_started, 1),
+                "finish_seconds": round(loop.time() - finish_started, 1),
+                "rounds": u.rounds,
+                "note_round_seconds": round(u.last_round_seconds, 1),
+                "output_tokens": u.output_tokens,
+                "reasoning_tokens": u.reasoning_tokens,
+                "note_chars": len(source.note),
+            }
             return result
     except TimeoutError:
         return {

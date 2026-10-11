@@ -138,13 +138,28 @@ async def run_consults(cases: list[dict[str, Any]], provider: str | None = None,
                 result = {"ok": False, "error": " ".join(getattr(x, "text", "") for x in res.content)}
             row = score_consult(c, result)
             row.update(seconds=round(time.monotonic() - started, 1), provider=result.get("provider"), model=result.get("model"),
-                       usage=result.get("usage"))
+                       usage=result.get("usage"), timing=result.get("timing"))
             rows.append(row)
 
     await asyncio.gather(*(one(c) for c in cases))
     rows.sort(key=lambda r: r["id"])
     return {"kind": "consult", "cases": rows, "passed": sum(r["pass"] for r in rows), "total": len(rows),
-            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3)}
+            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3), "latency": latency_summary(rows)}
+
+
+TIMING_KEYS = ("rounds", "model_seconds", "tool_seconds", "synthesis_seconds", "finish_seconds", "note_round_seconds",
+               "output_tokens", "reasoning_tokens", "note_chars")
+
+
+def latency_summary(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Wall-clock percentiles over every case, and mean timing parts over the cases that returned them."""
+    secs = sorted(r["seconds"] for r in rows if r.get("seconds") is not None)
+    timed = [r["timing"] for r in rows if r.get("timing")]
+    out: dict[str, float] = {"mean_seconds": round(sum(secs) / max(len(secs), 1), 1),
+                             "median_seconds": secs[len(secs) // 2] if secs else 0, "max_seconds": secs[-1] if secs else 0}
+    for key in TIMING_KEYS:
+        out[f"mean_{key}"] = round(sum(t.get(key, 0) for t in timed) / max(len(timed), 1), 1)
+    return out
 
 
 def render(report: dict[str, Any]) -> str:
@@ -156,10 +171,18 @@ def render(report: dict[str, Any]) -> str:
             lines.append(f"  {mark} {r['id']:<30} expected {r['expected']:<9} got {r['got']:<9} {','.join(r['flags'])}")
         else:
             failed = [c["check"] for c in r["checks"] if not c["pass"]]
-            lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s" + (f"  failed: {', '.join(failed)}" if failed else ""))
+            t = r.get("timing") or {}
+            split = (f" (rounds {t.get('rounds')}, model {t.get('model_seconds')}s [note {t.get('note_round_seconds')}s], "
+                     f"out {t.get('output_tokens')} tok ({t.get('reasoning_tokens')} reasoning, note {t.get('note_chars')} chars), "
+                     f"tools {t.get('tool_seconds')}s, finish {t.get('finish_seconds')}s)"
+                     if t else "")
+            lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s{split}"
+                         + (f"  failed: {', '.join(failed)}" if failed else ""))
             for c in r["checks"]:  # details make CI logs actionable without downloading the report
                 if not c["pass"] and c.get("detail") is not None:
                     lines.append(f"      - {c['check']}: {json.dumps(c['detail'])[:300]}")
+    if lat := report.get("latency"):
+        lines.append("  latency: " + ", ".join(f"{k} {v}" for k, v in lat.items()))
     if report.get("under_triaged"):
         lines.append(f"  UNDER-TRIAGED (safety): {', '.join(report['under_triaged'])}")
     return "\n".join(lines)

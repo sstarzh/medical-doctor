@@ -49,7 +49,7 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 |---|---|---|
 | Deterministic red-flag screen (negation-aware, about 60 rules, 35 vignettes in CI) | Every consult, before the model | under 1 ms |
 | Patient chart with lab and vital **trends** and recent visits | Every consult | one encrypted read |
-| **Self-check** of the note: can't-miss coverage, under-triage, allergy conflicts (including cross-reactive classes), children's doses without a weight, fabricated citations, uncertainty | Every consult, after the note | about 0.2 ms |
+| **Self-check** of the note: can't-miss coverage, under-triage, allergy conflicts (including cross-reactive classes), children's doses without a weight, fabricated citations, uncertainty. When a red flag's danger is a diagnosis (ectopic pregnancy, stroke, PE, septic arthritis…), it must be **in the differential**, not just mentioned in the prose; presentation-type flags (suicide risk, airway) only need the note to address them | Every consult, after the note | about 0.2 ms |
 | **One-shot revision** with the self-check findings | Only when a critical finding remains and at least 25 s of the time budget is left; kept only if it helps | one completion |
 | **Auto-escalation** to high effort | Urgent screens when the caller didn't choose a depth; emergencies stay fast | modest |
 | **`second_opinion`**: blinded independent work-up by a stronger or different model, then a critical comparison and verdict | When the patient asks, or doubts a diagnosis or treatment | about one consult |
@@ -64,9 +64,11 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 - **`note`**: the Markdown consult note.
 - **`structured`**: the same note as validated data (`ConsultSummary`).
   - Fields: urgency, problem representation, differential (likelihood, %, can't-miss flag), evaluation, management, drafts, missing information, return precautions, citations.
+  - The server sets the can't-miss flag itself on any listed diagnosis a red flag is about, even if the model left it off, so clients can always highlight it.
   - `urgency` is never lower than the deterministic red-flag screen; the model's own call stays in `model_urgency`.
   - If the model omits the block, `source` reads `markdown_fallback`.
 - **`citation_check`**: every PMID in the note looked up in PubMed and marked `verified`, `mismatch` (a real article on a different topic), `not_found`, or `unchecked`. PubMed being unreachable is never counted as verified.
+- **`timing`**: where the time went, with no clinical content: total, model, tool and finish seconds, rounds, the note-writing round, output and hidden-reasoning tokens, and note length. `medical-doctor-mcp eval --consult` prints it per case with averages.
 - **Also returned:** `red_flag_screen`, `tool_calls`, `usage`, and, for a second opinion, `panel`.
 
 ## Personal doctor: the patient record
@@ -229,7 +231,7 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
 | `MEDICAL_DOCTOR_CONSULT_DEPTH` | `standard` | Default consult depth: `quick` (~4 tool rounds, low effort, no web search), `standard` (8 rounds, 2 guideline searches), `thorough` (12 rounds, high effort, 5 searches). Callers can override per consult with `depth`. |
-| `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max` |
+| `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max`. Applies to Claude and Meta Muse Spark (`max` is sent to Meta as `xhigh`; if a host rejects the parameter it is dropped) |
 | `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` | `claude-fable-5-1` | Claude reviewer model for second opinions (other providers: use `provider:model` in `MEDICAL_DOCTOR_SECOND_OPINION`) |
 | `MEDICAL_DOCTOR_AUTO_CHART` | `1` | Open a chart on the first visit and save stated facts and visit notes automatically |
 | `MEDICAL_DOCTOR_FAST_MODE` | `0` | `1` turns on Claude fast mode (about 2.5x faster output at 2x the token price; Claude API only). Falls back to standard speed automatically when fast mode is rate-limited. |

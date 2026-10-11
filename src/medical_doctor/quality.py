@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .cant_miss import names
 from .consult_note import URGENCY_RANK
 from .orders import BEERS, CLASSES, CONTROLLED, CROSS_REACTIVE, PEDIATRIC_LIMITS, _tokens
 from .records.model import age_years
@@ -100,9 +101,19 @@ def review(
 
     # Can't-miss coverage of every emergency pattern the screen found.
     for hit in triage.get("red_flags") or []:
-        words = CANT_MISS.get(hit.get("id", ""))
-        if words and not (_mentions(ddx_text, words) or _mentions(note, words)):
-            add("critical", "cant_miss", f"The red-flag screen found '{hit.get('condition')}' but the note never addresses it.")
+        rule = hit.get("id", "")
+        # Rules whose danger is a diagnosis (cant_miss.CANT_MISS_DX) need it named IN the differential:
+        # a prose mention ("ectopic unlikely") is how one silently drops off the list. Presentation-type
+        # rules (suicide risk, airway) only need the note to address them.
+        named = names(rule, ddx_text) if ddx else names(rule, note)
+        if named is not None:
+            gap = None if named else "the differential does not include it" if ddx else "the note never names it"
+        elif words := CANT_MISS.get(rule):
+            gap = None if _mentions(ddx_text, words) or _mentions(note, words) else "the note never addresses it"
+        else:
+            continue
+        if gap:
+            add("critical", "cant_miss", f"The red-flag screen found '{hit.get('condition')}' but {gap}.")
 
     # Under-triage relative to the deterministic screen (the floor is applied for routing, but the
     # note's own words must not tell the patient it can wait).

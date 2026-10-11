@@ -13,9 +13,16 @@ Capabilities compared with the Anthropic engine:
 from __future__ import annotations
 
 import json
+import logging
+import time
 from typing import Any
 
 from .base import ConsultOutcome, ConsultRun, run_tool_calls
+
+log = logging.getLogger("medical_doctor.llm")
+_UNSET = object()
+# (base_url, model) -> the reasoning_effort that host accepted after rejecting the requested one.
+_EFFORT_OVERRIDE: dict[tuple[str, str], str | None] = {}
 
 
 class OpenAICompatEngine:
@@ -33,7 +40,9 @@ class OpenAICompatEngine:
     ):
         self.provider = provider
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        self._key = (base_url or "", model)
+        known = _EFFORT_OVERRIDE.get(self._key, _UNSET)
+        self.reasoning_effort = reasoning_effort if known is _UNSET or reasoning_effort is None else known
         self.max_output_tokens = max_output_tokens
         if client is None:
             from openai import AsyncOpenAI
@@ -47,10 +56,36 @@ class OpenAICompatEngine:
             params["reasoning_effort"] = self.reasoning_effort
         return params
 
+    async def _create(self, **kwargs: Any) -> Any:
+        """chat.completions.create. If the host rejects the request while reasoning_effort is set (400/422),
+        retry with a lower supported level, then without it; the first that works is remembered for this
+        host and model, so later consults skip the failing request. A failure that persists without the
+        parameter was never about it and is raised."""
+        try:
+            return await self.client.chat.completions.create(**{**self._params(), **kwargs})
+        except Exception as exc:
+            if self.reasoning_effort is None or getattr(exc, "status_code", None) not in (400, 422):
+                raise
+            first, requested = exc, self.reasoning_effort
+        fallbacks: list[str | None] = ["high"] if self.reasoning_effort in ("xhigh", "max") else []
+        for effort in [*fallbacks, None]:
+            self.reasoning_effort = effort
+            try:
+                resp = await self.client.chat.completions.create(**{**self._params(), **kwargs})
+            except Exception as exc:
+                if getattr(exc, "status_code", None) not in (400, 422):
+                    raise
+                continue
+            _EFFORT_OVERRIDE[self._key] = effort
+            log.warning("%s %s rejected reasoning_effort; using %s", self.provider, self.model, effort or "the model default")
+            return resp
+        self.reasoning_effort = requested  # the parameter was not the problem
+        raise first
+
     async def complete(self, system: str, prompt: str, max_tokens: int = 8000) -> str:
-        resp = await self.client.chat.completions.create(
+        resp = await self._create(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            **{**self._params(), "max_completion_tokens": max_tokens},
+            max_completion_tokens=max_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -74,13 +109,16 @@ class OpenAICompatEngine:
             final_round = round_no == run.max_rounds
             if final_round:  # out of tool budget: force a written answer instead of discarding the work
                 messages.append({"role": "user", "content": "Tool budget exhausted. Write the consult note now from the evidence gathered; mark anything unverified."})
-            resp = await self.client.chat.completions.create(
-                messages=messages, tools=tools, tool_choice="none" if final_round else "auto", **self._params()
-            )
+            t0 = time.monotonic()
+            resp = await self._create(messages=messages, tools=tools, tool_choice="none" if final_round else "auto")
+            out.usage.last_round_seconds = time.monotonic() - t0
+            out.usage.model_seconds += out.usage.last_round_seconds
             out.usage.rounds += 1
             if resp.usage is not None:
                 out.usage.input_tokens += resp.usage.prompt_tokens or 0
                 out.usage.output_tokens += resp.usage.completion_tokens or 0
+                details = getattr(resp.usage, "completion_tokens_details", None)
+                out.usage.reasoning_tokens += getattr(details, "reasoning_tokens", 0) or 0
             choice = resp.choices[0]
             msg = choice.message
             if getattr(msg, "refusal", None):
@@ -106,7 +144,9 @@ class OpenAICompatEngine:
             })
             if run.progress:
                 await run.progress(round_no + 1, "Verifying with " + ", ".join(c.function.name for c in calls))
+            t0 = time.monotonic()
             results = await run_tool_calls([(c.id, c.function.name, c.function.arguments) for c in calls], run.execute, out.tool_calls)
+            out.usage.tool_seconds += time.monotonic() - t0
             for call_id, text, is_error in results:
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": ("ERROR: " if is_error else "") + text})
         out.error = "The model returned no consult note."
