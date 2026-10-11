@@ -260,17 +260,41 @@ def _register_routes(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.custom_route("/", methods=["GET"])
     async def index(request: Request) -> Response:
+        # People opening the address in a browser get a setup guide; MCP clients and scripts get JSON.
+        # The MCP address only ever comes from configuration, never from the request's Host header.
+        if request.query_params.get("format") != "json" and prefers_html(request.headers.get("accept", "")):
+            from .landing import landing_page
+
+            return landing_page(settings, __version__)
         return JSONResponse(
             {
                 "name": "Medical Doctor MCP",
                 "version": __version__,
-                "mcp_endpoint": f"{settings.public_url}/mcp" if settings.public_url else "/mcp",
+                "mcp_endpoint": settings.resource_url if settings.public_url else "/mcp",
                 "transport": "streamable-http",
                 "auth": settings.auth_mode,
                 "docs": "https://github.com/sstarzh/medical-doctor",
                 "disclaimer": DISCLAIMER,
-            }
+            },
+            headers={"Vary": "Accept"},
         )
+
+
+def prefers_html(accept: str) -> bool:
+    """True when the Accept header ranks text/html above JSON (q-values honored, case-insensitive)."""
+    q: dict[str, float] = {}
+    for part in accept.lower().split(","):
+        media, *params = (p.strip() for p in part.split(";"))
+        weight = 1.0
+        for param in params:
+            if param.startswith("q="):
+                try:
+                    weight = float(param[2:])
+                except ValueError:
+                    weight = 0.0
+        q[media] = max(q.get(media, 0.0), weight)
+    html_q = q.get("text/html", 0.0)
+    return html_q > 0 and html_q >= q.get("application/json", 0.0)
 
 
 def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, records: Records) -> None:

@@ -41,6 +41,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from ..config import Settings
+from ..web import SECURITY_HEADERS
 from .store import AsyncStore, Store, StoreFull, digest
 from .upstream import HttpClientFactory, LoginError, UpstreamClient, check_access, default_http, pkce_pair
 from .verifiers import api_key_access_token
@@ -289,14 +290,6 @@ class BrokerOAuthProvider:
 
 # --- Login / consent pages and the upstream callback ------------------------
 
-_SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'; base-uri 'none'",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
-}
-
 _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <style>
@@ -316,7 +309,7 @@ code{{font-size:.9em}}
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
-    return HTMLResponse(_PAGE.format(title=html.escape(title), body=body), status_code=status, headers=_SECURITY_HEADERS)
+    return HTMLResponse(_PAGE.format(title=html.escape(title), body=body), status_code=status, headers=SECURITY_HEADERS)
 
 
 def _error(message: str, status: int = 400) -> HTMLResponse:
