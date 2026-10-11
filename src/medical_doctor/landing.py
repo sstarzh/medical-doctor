@@ -10,13 +10,17 @@ from starlette.responses import HTMLResponse
 from .config import Settings
 from .web import page_headers
 
-# Opens Claude's "Add custom connector" dialog. The prefill parameters are undocumented; if Claude
-# ignores them the link still lands on the connectors page and the user pastes the copied address.
-CLAUDE_CONNECTORS = "https://claude.ai/settings/connectors"
+# Opens Claude's "Add custom connector" dialog (connectors moved from Settings to Customize). The prefill
+# parameters are undocumented, so both known spellings are sent; if Claude ignores them the link still lands
+# on the connectors page and the user pastes the copied address.
+CLAUDE_CONNECTORS = "https://claude.ai/customize/connectors"
 
 
 def claude_add_link(mcp_url: str, name: str = "Medical Doctor") -> str:
-    return f"{CLAUDE_CONNECTORS}?" + urlencode({"modal": "add-custom-connector", "mcpName": name, "mcpServerUrl": mcp_url})
+    return f"{CLAUDE_CONNECTORS}?" + urlencode({
+        "modal": "add-custom-connector", "connectorName": name, "connectorUrl": mcp_url,
+        "mcpName": name, "mcpServerUrl": mcp_url,
+    })
 
 
 # Static, so the CSP can pin it by hash and the page stays cacheable. With no public address the
