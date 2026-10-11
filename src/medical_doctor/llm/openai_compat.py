@@ -48,10 +48,20 @@ class OpenAICompatEngine:
             params["reasoning_effort"] = self.reasoning_effort
         return params
 
+    async def _create(self, **kwargs: Any) -> Any:
+        """chat.completions.create, dropping reasoning_effort for good if this model/host rejects it."""
+        try:
+            return await self.client.chat.completions.create(**{**self._params(), **kwargs})
+        except Exception as exc:
+            if not self.reasoning_effort or "reasoning" not in str(exc).lower() or getattr(exc, "status_code", None) != 400:
+                raise
+            self.reasoning_effort = None
+            return await self.client.chat.completions.create(**{**self._params(), **kwargs})
+
     async def complete(self, system: str, prompt: str, max_tokens: int = 8000) -> str:
-        resp = await self.client.chat.completions.create(
+        resp = await self._create(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            **{**self._params(), "max_completion_tokens": max_tokens},
+            max_completion_tokens=max_tokens,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -76,9 +86,7 @@ class OpenAICompatEngine:
             if final_round:  # out of tool budget: force a written answer instead of discarding the work
                 messages.append({"role": "user", "content": "Tool budget exhausted. Write the consult note now from the evidence gathered; mark anything unverified."})
             t0 = time.monotonic()
-            resp = await self.client.chat.completions.create(
-                messages=messages, tools=tools, tool_choice="none" if final_round else "auto", **self._params()
-            )
+            resp = await self._create(messages=messages, tools=tools, tool_choice="none" if final_round else "auto")
             out.usage.last_round_seconds = time.monotonic() - t0
             out.usage.model_seconds += out.usage.last_round_seconds
             out.usage.rounds += 1

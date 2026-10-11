@@ -102,8 +102,11 @@ def review(
     # Can't-miss coverage of every emergency pattern the screen found.
     for hit in triage.get("red_flags") or []:
         words = CANT_MISS.get(hit.get("id", ""))
-        if words and not (_mentions(ddx_text, words) or _mentions(note, words)):
-            add("critical", "cant_miss", f"The red-flag screen found '{hit.get('condition')}' but the note never addresses it.")
+        # With a structured differential, the diagnosis must be IN it: a passing mention in the prose
+        # ("ectopic unlikely") is how a can't-miss diagnosis silently drops off the list.
+        covered = _mentions(ddx_text, words) if ddx else _mentions(note, words)
+        if words and not covered:
+            add("critical", "cant_miss", f"The red-flag screen found '{hit.get('condition')}' but the differential does not include it.")
 
     # Under-triage relative to the deterministic screen (the floor is applied for routing, but the
     # note's own words must not tell the patient it can wait).

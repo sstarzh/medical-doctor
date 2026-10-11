@@ -307,3 +307,26 @@ async def test_fast_mode_requests_and_falls_back_to_standard_speed():
     out = await e.consult(_run(echo))
     assert out.ok and calls[0]["speed"] == "fast" and "fast-mode-2026-02-01" in calls[0]["betas"]
     assert "speed" not in calls[1] and "fast-mode-2026-02-01" not in calls[1]["betas"]
+
+
+def test_meta_reasoning_effort_follows_the_consult_depth(monkeypatch):
+    monkeypatch.setenv("MODEL_API_KEY", "x")
+    s = Settings(llm_provider="meta")
+    assert physician.make_engine(s, "meta", "quick").reasoning_effort == "low"
+    assert physician.make_engine(s, "meta", "standard").reasoning_effort == "medium"
+    assert physician.make_engine(Settings(llm_provider="meta", llm_effort="max"), "meta", "standard").reasoning_effort == "xhigh"
+
+
+async def test_openai_compat_drops_a_rejected_reasoning_effort_once():
+    class Rejecting(FakeChat):
+        async def _create(self, **kw):
+            if "reasoning_effort" in kw:
+                self.calls.append({"rejected": True})
+                raise type("BadRequestError", (Exception,), {"status_code": 400})("Unsupported parameter: reasoning_effort")
+            return await super()._create(**kw)
+
+    fake = Rejecting([_choice(content="## Urgency\nROUTINE"), _choice(content="again")])
+    e = OpenAICompatEngine(provider="meta", model="m", api_key="x", client=fake, reasoning_effort="medium")
+    assert (await e.consult(_run(echo))).ok and e.reasoning_effort is None
+    assert await e.complete("s", "p") == "again"
+    assert sum(1 for c in fake.calls if c.get("rejected")) == 1  # not retried with it again

@@ -238,7 +238,11 @@ def make_engine(
     if provider == "meta":
         if is_training_model(model):  # defence in depth; config.validate already refuses these
             raise ValueError(f"Refusing Meta '-contributor' model {model!r} for patient data")
-        return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url)
+        # Muse Spark always reasons; without reasoning_effort it chooses its own depth, and hidden reasoning
+        # was ~46% of its output. The consult depth sets it (unsupported values are dropped by the engine).
+        effort = {"max": "xhigh"}.get(e := depth_profile(settings, depth, urgency)["effort"], e)
+        return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url,
+                                  reasoning_effort=effort)
     if provider == "llama":
         if not settings.llama_base_url:
             raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL")

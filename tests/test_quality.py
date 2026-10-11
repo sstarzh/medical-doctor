@@ -344,3 +344,13 @@ def test_obstetric_red_flag_needs_a_specific_diagnosis_not_the_word_pregnancy():
     assert review(structured, "Possible early pregnancy; take a pregnancy test.", triage, None)["critical"] == 1
     structured["differential"].append({"diagnosis": "Ectopic pregnancy"})
     assert review(structured, "", triage, None)["critical"] == 0
+
+
+def test_cant_miss_must_be_in_the_differential_not_just_mentioned():
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "pregnancy", "condition": "Obstetric emergency"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Corpus luteum cyst"}], "urgency": "emergency"}
+    assert review(structured, "Ectopic pregnancy is unlikely given the history.", triage, None)["critical"] == 1
+    # No structured differential (summary missing): the prose is all there is to check.
+    assert review({"source": "fallback", "differential": []}, "Rule out ectopic pregnancy now.", triage, None)["critical"] == 0
