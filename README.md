@@ -54,7 +54,7 @@ The server also exposes **prompts** (`personal_doctor_visit`, `patient_intake`, 
 | **Auto-escalation** to high effort | Urgent screens when the caller didn't choose a depth; emergencies stay fast | modest |
 | **`second_opinion`**: blinded independent work-up by a stronger or different model, then a critical comparison and verdict | When the patient asks, or doubts a diagnosis or treatment | about one consult |
 
-- **Who gives the second opinion.** Another configured model family (OpenAI, Meta) if available. Otherwise `claude-fable-5-1` at high effort, falling back to Opus if the account cannot use it. Set `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` to choose.
+- **Who gives the second opinion.** Set `MEDICAL_DOCTOR_SECOND_OPINION` to an ordered list (e.g. `openai,anthropic`); the first provider with a key reviews, and the consult provider itself is used only if nothing else listed has a key (so `meta` on an all-Meta server works). Unset: `claude-fable-5-1` at high effort (falling back to Opus; `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` to change), else any other provider with a key, else the consult provider at thorough depth. `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` applies to whichever provider reviews (a `claude-*` name to Claude, anything else to the others), so a Meta-only server can have a different Meta model review; if the reviewer is the very same model, the result says so (`same_model`).
 - **What it can review.** Advice the patient pastes (from their own doctor, for example), or by default the last consult in their chart. The result is saved as a visit note.
 - **When it's suggested.** A consult whose self-check finds a wide differential or a critical issue sets `self_check.suggest_second_opinion`.
 - **Photos.** `consult(images=[...])` takes up to 4 https URLs or base64 images (rash, wound, eye, a lab report). Images are not stored.
@@ -225,12 +225,12 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_PROVIDER` | `anthropic` | `anthropic` / `openai` / `meta` / `llama` (see Model providers) |
 | `MEDICAL_DOCTOR_MODEL` | provider default | Model for the default provider |
 | `OPENAI_API_KEY`, `MODEL_API_KEY`, `LLAMA_API_KEY` | – | Credentials for the OpenAI, Meta and Llama providers |
-| `MEDICAL_DOCTOR_SECOND_OPINION` | – | Providers on the second-opinion panel, e.g. `anthropic,openai,meta` |
+| `MEDICAL_DOCTOR_SECOND_OPINION` | – (automatic) | Ordered second-opinion reviewers, e.g. `anthropic,openai,meta`. Providers without a key are skipped; the consult provider is used only if it is the only one usable |
 | `MEDICAL_DOCTOR_CONSULT_TIMEOUT` | `270` | Overall time budget per consult in seconds, under Vercel's 300 s limit |
 | `MEDICAL_DOCTOR_DATA_KEYS` | – | Key-encryption key(s) for patient records, `kid:base64,…` (`medical-doctor-mcp gen-data-key`). Required for records on servers; created automatically for local stdio. |
 | `MEDICAL_DOCTOR_CONSULT_DEPTH` | `standard` | Default consult depth: `quick` (~4 tool rounds, low effort, no web search), `standard` (8 rounds, 2 guideline searches), `thorough` (12 rounds, high effort, 5 searches). Callers can override per consult with `depth`. |
 | `MEDICAL_DOCTOR_EFFORT` | `medium` | Reasoning effort for `standard` depth: `low` / `medium` / `high` / `xhigh` / `max` |
-| `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` | `claude-fable-5-1` | Reviewer model for `second_opinion` when no other provider is configured |
+| `MEDICAL_DOCTOR_SECOND_OPINION_MODEL` | `claude-fable-5-1` | Second-opinion reviewer model, for whichever provider reviews (`claude-*` → Claude; other names → OpenAI/Meta/Llama) |
 | `MEDICAL_DOCTOR_AUTO_CHART` | `1` | Open a chart on the first visit and save stated facts and visit notes automatically |
 | `MEDICAL_DOCTOR_FAST_MODE` | `0` | `1` turns on Claude fast mode (about 2.5x faster output at 2x the token price; Claude API only). Falls back to standard speed automatically when fast mode is rate-limited. |
 | `MEDICAL_DOCTOR_WEB_SEARCH` | `1` | Lets the attending use Claude web search, restricted to guideline publishers (CDC, FDA, NICE, WHO, USPSTF, ACC/AHA, …); sites with user comments are excluded |

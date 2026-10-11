@@ -151,7 +151,7 @@ async def test_second_opinion_panel_synthesizes(monkeypatch):
     primary = StubEngine("anthropic", "Claude note: likely pneumonia")
     other = StubEngine("openai", "GPT note: consider PE")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None, **kw: other)
     res = await physician.run_consult(
         case="cough", question=None, audience="clinician", triage={"urgency": "routine"}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("anthropic", "openai")), engine=primary, second_opinion=True,
@@ -165,7 +165,7 @@ async def test_panel_falls_back_when_primary_fails(monkeypatch):
     primary = StubEngine("anthropic", "", ok=False)
     other = StubEngine("meta", "Llama note")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None, **kw: other)
     res = await physician.run_consult(
         case="x", question=None, audience="clinician", triage={}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("meta",)), engine=primary, second_opinion=True,

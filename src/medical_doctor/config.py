@@ -251,7 +251,7 @@ def validate(s: Settings) -> None:
             raise ValueError(f"Unknown model provider {p!r}: use {', '.join(PROVIDERS)}")
         if p == "llama" and not s.llama_base_url:
             raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL (an OpenAI-compatible Llama host)")
-    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items()]:
+    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items(), ("meta", s.second_opinion_model)]:
         if p == "meta" and model and is_training_model(model):
             raise ValueError(
                 f"Meta model {model!r} is a '-contributor' variant: Meta uses its traffic to improve its products, "
