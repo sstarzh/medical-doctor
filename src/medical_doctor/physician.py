@@ -394,9 +394,10 @@ async def _finish_note(
 ) -> None:
     """Structure the note, verify citations, self-check it (deterministic, milliseconds), and when a
     CRITICAL finding remains and time allows, revise it once with the findings (one completion call)."""
-    from .quality import REVISION_PROMPT, review
+    from .quality import REVISION_PROMPT, flag_cant_miss, review
 
     result["note"], result["structured"] = structure(result["note"], triage)
+    flag_cant_miss(result["structured"], triage)
     if progress:
         await progress(100, "Verifying citations and safety-checking the note")
     await _check_citations(result, settings)
@@ -424,6 +425,7 @@ async def _finish_note(
         check["revision"] = f"failed ({type(exc).__name__}); findings stand"
         return
     note, structured = structure(revised, triage)
+    flag_cant_miss(structured, triage)
     after = review(structured, note, triage, chart, result.get("citation_check"))
     if after["critical"] < check["critical"]:
         result["note"], result["structured"] = note, structured

@@ -363,3 +363,12 @@ def test_red_flags_without_a_cant_miss_list_do_not_crash_the_review():
     triage = {"urgency": "emergency", "red_flags": [{"id": "altered_mental_status"}, {"id": "acute_abdomen"}]}
     structured = {"source": "model", "differential": [{"diagnosis": "Delirium"}], "urgency": "emergency"}
     assert review(structured, "note", triage, None)["critical"] == 0
+
+
+def test_listed_red_flag_diagnosis_is_marked_cant_miss():
+    # Eval adult-ectopic (Meta): ectopic pregnancy listed, but without the can't-miss flag.
+    from medical_doctor.quality import flag_cant_miss
+
+    s = {"differential": [{"diagnosis": "Ectopic pregnancy", "cant_miss": False}, {"diagnosis": "Ovarian cyst"}]}
+    flag_cant_miss(s, {"red_flags": [{"id": "pregnancy"}, {"id": "altered_mental_status"}]})
+    assert s["differential"][0]["cant_miss"] is True and "cant_miss" not in s["differential"][1]

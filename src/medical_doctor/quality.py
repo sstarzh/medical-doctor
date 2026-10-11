@@ -85,6 +85,16 @@ def _recommended_drugs(structured: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def flag_cant_miss(structured: dict[str, Any], triage: dict[str, Any]) -> None:
+    """Mark a listed diagnosis as can't-miss when it is the one the red-flag screen is about (the model
+    lists ectopic pregnancy but forgets the flag): deterministic, so clients highlight it every time."""
+    for hit in triage.get("red_flags") or []:
+        words = CANT_MISS.get(hit.get("id", ""))
+        for d in structured.get("differential") or [] if words else []:
+            if isinstance(d, dict) and _mentions(str(d.get("diagnosis", "")), words):
+                d["cant_miss"] = True
+
+
 def review(
     structured: dict[str, Any], note: str, triage: dict[str, Any], chart: dict[str, Any] | None,
     citation_check: dict[str, Any] | None = None,
