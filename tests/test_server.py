@@ -222,7 +222,7 @@ def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
         page = c.get("/", headers={"accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
         assert "https://doctor.example/mcp" in page.text and "Add to Claude" in page.text
-        assert "mcpServerUrl=https%3A%2F%2Fdoctor.example%2Fmcp" in page.text
+        assert "claude.ai/customize/connectors?" in page.text and "connectorUrl=https%3A%2F%2Fdoctor.example%2Fmcp" in page.text
         # Hash-pinned script (cache-safe), browser-private cache, and Vary on the negotiated route.
         csp = page.headers["content-security-policy"]
         script = page.text.split("<script>")[1].split("</script>")[0]
@@ -240,7 +240,7 @@ def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
 def test_setup_page_never_reflects_the_host_header_and_handles_local_servers():
     with _root_client() as c:  # no public URL: a local, unauthenticated server
         page = c.get("/", headers={"accept": "text/html", "host": "evil.example"})
-        assert "evil.example" not in page.text and "Add to Claude" not in page.text and "claude.ai/settings" not in page.text
+        assert "evil.example" not in page.text and "Add to Claude" not in page.text and "claude.ai/customize" not in page.text
         assert '<code id="mcp-url"></code>' in page.text and "claude mcp add" in page.text
         assert page.headers["cache-control"] == "no-store" and "sign in" not in page.text
         assert c.get("/", headers={"accept": "application/json", "host": "evil.example"}).json()["mcp_endpoint"] == "/mcp"
