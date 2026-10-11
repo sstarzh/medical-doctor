@@ -205,19 +205,53 @@ async def test_rate_limiter():
     await RateLimiter(0).check("a")  # unlimited
 
 
-def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
+def _root_client(**settings):
     from starlette.testclient import TestClient
 
     from medical_doctor.config import Settings
     from medical_doctor.server import build_server
 
-    app = build_server(Settings(public_url="https://doctor.example", consult_limit_per_hour=0), local_mode=True).streamable_http_app(host="127.0.0.1")
-    with TestClient(app, base_url="https://doctor.example") as c:
-        page = c.get("/", headers={"accept": "text/html,application/xhtml+xml"})
+    app = build_server(Settings(consult_limit_per_hour=0, **settings), local_mode=True).streamable_http_app(host="127.0.0.1")
+    return TestClient(app, base_url="https://doctor.example")
+
+
+def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
+    from medical_doctor.web import script_hash
+
+    with _root_client(public_url="https://doctor.example") as c:
+        page = c.get("/", headers={"accept": "text/html,application/xhtml+xml,*/*;q=0.8"})
         assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
         assert "https://doctor.example/mcp" in page.text and "Add to Claude" in page.text
         assert "mcpServerUrl=https%3A%2F%2Fdoctor.example%2Fmcp" in page.text
-        nonce = page.headers["content-security-policy"].split("'nonce-")[1].split("'")[0]
-        assert f'<script nonce="{nonce}">' in page.text and "unsafe-eval" not in page.headers["content-security-policy"]
-        assert c.get("/", headers={"accept": "application/json"}).json()["mcp_endpoint"] == "https://doctor.example/mcp"
+        # Hash-pinned script (cache-safe), browser-private cache, and Vary on the negotiated route.
+        csp = page.headers["content-security-policy"]
+        script = page.text.split("<script>")[1].split("</script>")[0]
+        assert f"script-src {script_hash(script)}" in csp and "unsafe" not in csp.split("script-src")[1]
+        assert page.headers["cache-control"] == "private, max-age=300" and page.headers["vary"] == "Accept"
+        api = c.get("/", headers={"accept": "application/json"})
+        assert api.json()["mcp_endpoint"] == "https://doctor.example/mcp" and api.headers["vary"] == "Accept"
         assert c.get("/?format=json", headers={"accept": "text/html"}).json()["name"] == "Medical Doctor MCP"
+        # q-values and case: JSON preferred over HTML stays JSON; mixed-case HTML is still HTML.
+        assert c.get("/", headers={"accept": "application/json, text/html;q=0.1"}).headers["content-type"].startswith("application/json")
+        assert c.get("/", headers={"accept": "Text/HTML"}).headers["content-type"].startswith("text/html")
+        assert c.get("/", headers={"accept": "*/*"}).headers["content-type"].startswith("application/json")
+
+
+def test_setup_page_never_reflects_the_host_header_and_handles_local_servers():
+    with _root_client() as c:  # no public URL: a local, unauthenticated server
+        page = c.get("/", headers={"accept": "text/html", "host": "evil.example"})
+        assert "evil.example" not in page.text and "Add to Claude" not in page.text and "claude.ai/settings" not in page.text
+        assert '<code id="mcp-url"></code>' in page.text and "claude mcp add" in page.text
+        assert page.headers["cache-control"] == "no-store" and "sign in" not in page.text
+        assert c.get("/", headers={"accept": "application/json", "host": "evil.example"}).json()["mcp_endpoint"] == "/mcp"
+
+
+def test_setup_page_names_the_configured_sign_in():
+    from medical_doctor.config import Settings, UpstreamIdP
+    from medical_doctor.landing import landing_page
+
+    idp = UpstreamIdP("github", "GitHub", "x", "y")
+    text = landing_page(Settings(public_url="https://d.example", auth_mode="oauth", idps=(idp,)), "1").body.decode()
+    assert "sign in with GitHub" in text and "Google" not in text and "private to your account" in text
+    text = landing_page(Settings(public_url="https://d.example", auth_mode="apikey"), "1").body.decode()
+    assert "access key" in text and "sign in with" not in text
