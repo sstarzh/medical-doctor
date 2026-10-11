@@ -66,9 +66,11 @@ class Usage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     rounds: int = 0
+    model_seconds: float = 0.0  # wall-clock waiting on the model, summed over rounds
+    tool_seconds: float = 0.0  # wall-clock running tool calls (each round's calls run concurrently)
 
-    def as_dict(self) -> dict[str, int]:
-        return self.__dict__.copy()
+    def as_dict(self) -> dict[str, Any]:
+        return {**self.__dict__, "model_seconds": round(self.model_seconds, 1), "tool_seconds": round(self.tool_seconds, 1)}
 
 
 @dataclass

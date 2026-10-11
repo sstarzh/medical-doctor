@@ -8,6 +8,7 @@ refusal fallbacks, and adaptive thinking controlled by effort.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import anthropic
@@ -141,6 +142,7 @@ class AnthropicEngine:
                     last["content"].append(nudge)
                 else:
                     messages.append({"role": "user", "content": [nudge]})
+            t0 = time.monotonic()
             response = await self._final_message(
                 max_tokens=64000,
                 system=system,
@@ -151,6 +153,7 @@ class AnthropicEngine:
                 cache_control={"type": "ephemeral"},
                 **extra,
             )
+            out.usage.model_seconds += time.monotonic() - t0
             out.usage.rounds += 1
             u = response.usage
             out.usage.input_tokens += u.input_tokens or 0
@@ -173,7 +176,9 @@ class AnthropicEngine:
             calls = [(b.id, b.name, dict(b.input)) for b in response.content if b.type == "tool_use"]
             if run.progress:
                 await run.progress(round_no + 1, "Verifying with " + ", ".join(c[1] for c in calls))
+            t0 = time.monotonic()
             results = await run_tool_calls(calls, run.execute, out.tool_calls)
+            out.usage.tool_seconds += time.monotonic() - t0
             messages.append({
                 "role": "user",
                 "content": [{"type": "tool_result", "tool_use_id": cid, "content": text, "is_error": err} for cid, text, err in results],

@@ -13,6 +13,7 @@ Capabilities compared with the Anthropic engine:
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from .base import ConsultOutcome, ConsultRun, run_tool_calls
@@ -74,9 +75,11 @@ class OpenAICompatEngine:
             final_round = round_no == run.max_rounds
             if final_round:  # out of tool budget: force a written answer instead of discarding the work
                 messages.append({"role": "user", "content": "Tool budget exhausted. Write the consult note now from the evidence gathered; mark anything unverified."})
+            t0 = time.monotonic()
             resp = await self.client.chat.completions.create(
                 messages=messages, tools=tools, tool_choice="none" if final_round else "auto", **self._params()
             )
+            out.usage.model_seconds += time.monotonic() - t0
             out.usage.rounds += 1
             if resp.usage is not None:
                 out.usage.input_tokens += resp.usage.prompt_tokens or 0
@@ -106,7 +109,9 @@ class OpenAICompatEngine:
             })
             if run.progress:
                 await run.progress(round_no + 1, "Verifying with " + ", ".join(c.function.name for c in calls))
+            t0 = time.monotonic()
             results = await run_tool_calls([(c.id, c.function.name, c.function.arguments) for c in calls], run.execute, out.tool_calls)
+            out.usage.tool_seconds += time.monotonic() - t0
             for call_id, text, is_error in results:
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": ("ERROR: " if is_error else "") + text})
         out.error = "The model returned no consult note."

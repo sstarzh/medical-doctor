@@ -289,7 +289,9 @@ async def run_consult(
     settings = settings or Settings()
     profile = depth_profile(settings, depth, triage.get("urgency"))
     engine = engine or make_engine(settings, depth=depth, urgency=triage.get("urgency"))
-    deadline = asyncio.get_running_loop().time() + settings.consult_timeout
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    deadline = started + settings.consult_timeout
     prompt = build_case_prompt(case, question, audience, triage, chart_summary)
 
     def run_for(e: Engine, prog: Progress | None) -> ConsultRun:
@@ -335,10 +337,19 @@ async def run_consult(
                         result["synthesis_error"] = f"{type(exc).__name__}: {exc}"
                 elif not primary.ok and good:
                     result.update({"ok": True, "note": good[0].note, "provider": good[0].provider, "model": good[0].model})
+            finish_started = loop.time()
             if result.get("ok") and result.get("note"):
                 await _finish_note(result, triage, settings, progress, engine=engine, prompt=prompt,
                                    chart=chart, deadline=deadline)
             result["escalated"] = profile["escalated"]
+            # Where the time went (no clinical content): model rounds, tools, then citations/self-check/revision.
+            result["timing"] = {
+                "total_seconds": round(loop.time() - started, 1),
+                "model_seconds": round(primary.usage.model_seconds, 1),
+                "tool_seconds": round(primary.usage.tool_seconds, 1),
+                "finish_seconds": round(loop.time() - finish_started, 1),
+                "rounds": primary.usage.rounds,
+            }
             return result
     except TimeoutError:
         return {

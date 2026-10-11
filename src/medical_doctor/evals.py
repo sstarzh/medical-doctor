@@ -138,13 +138,22 @@ async def run_consults(cases: list[dict[str, Any]], provider: str | None = None,
                 result = {"ok": False, "error": " ".join(getattr(x, "text", "") for x in res.content)}
             row = score_consult(c, result)
             row.update(seconds=round(time.monotonic() - started, 1), provider=result.get("provider"), model=result.get("model"),
-                       usage=result.get("usage"))
+                       usage=result.get("usage"), timing=result.get("timing"))
             rows.append(row)
 
     await asyncio.gather(*(one(c) for c in cases))
     rows.sort(key=lambda r: r["id"])
+    secs = sorted(r["seconds"] for r in rows)
+    timed = [r["timing"] for r in rows if r.get("timing")]
+
+    def mean(key: str) -> float:
+        return round(sum(t[key] for t in timed) / max(len(timed), 1), 1)
+
     return {"kind": "consult", "cases": rows, "passed": sum(r["pass"] for r in rows), "total": len(rows),
-            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3)}
+            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3),
+            "latency": {"mean_seconds": round(sum(secs) / max(len(secs), 1), 1), "median_seconds": secs[len(secs) // 2] if secs else 0,
+                        "max_seconds": secs[-1] if secs else 0, "mean_rounds": mean("rounds"), "mean_model_seconds": mean("model_seconds"),
+                        "mean_tool_seconds": mean("tool_seconds"), "mean_finish_seconds": mean("finish_seconds")}}
 
 
 def render(report: dict[str, Any]) -> str:
@@ -156,10 +165,16 @@ def render(report: dict[str, Any]) -> str:
             lines.append(f"  {mark} {r['id']:<30} expected {r['expected']:<9} got {r['got']:<9} {','.join(r['flags'])}")
         else:
             failed = [c["check"] for c in r["checks"] if not c["pass"]]
-            lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s" + (f"  failed: {', '.join(failed)}" if failed else ""))
+            t = r.get("timing") or {}
+            split = (f" (rounds {t['rounds']}, model {t['model_seconds']}s, tools {t['tool_seconds']}s, finish {t['finish_seconds']}s)"
+                     if t else "")
+            lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s{split}"
+                         + (f"  failed: {', '.join(failed)}" if failed else ""))
             for c in r["checks"]:  # details make CI logs actionable without downloading the report
                 if not c["pass"] and c.get("detail") is not None:
                     lines.append(f"      - {c['check']}: {json.dumps(c['detail'])[:300]}")
+    if lat := report.get("latency"):
+        lines.append("  latency: " + ", ".join(f"{k} {v}" for k, v in lat.items()))
     if report.get("under_triaged"):
         lines.append(f"  UNDER-TRIAGED (safety): {', '.join(report['under_triaged'])}")
     return "\n".join(lines)
