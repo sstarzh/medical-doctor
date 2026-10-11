@@ -126,6 +126,8 @@ def test_database_tls_verifies_the_server_when_a_ca_is_configured(tmp_path):
     pem = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----"  # as a Vercel env var: literal \\n
     path = db_ca_file(pem)
     assert Path(path).read_text().startswith("-----BEGIN CERTIFICATE-----\nMIIB\n") and db_ca_file(pem) == path
+    crlf = db_ca_file("-----BEGIN CERTIFICATE-----\r\nMIIC\r\n-----END CERTIFICATE-----\r\n")  # pasted with return characters
+    assert "\r" not in Path(crlf).read_text()
     assert db_ca_file("/etc/ssl/supabase.crt") == "/etc/ssl/supabase.crt" and db_ca_file("") is None
     dsn = clean_dsn("postgres://u:p@db.example.com/postgres", path)
     assert "sslmode=verify-full" in dsn and "sslrootcert=" in dsn

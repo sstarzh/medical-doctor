@@ -60,7 +60,7 @@ def db_ca_file(value: str | None = None) -> str | None:
     path = Path(tempfile.gettempdir()) / f"md-db-ca-{hashlib.sha256(value.encode()).hexdigest()[:16]}.pem"
     if not path.exists():
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(value.replace("\\n", "\n") + "\n")
+        tmp.write_text(value.replace("\\r", "").replace("\r", "").replace("\\n", "\n") + "\n")
         tmp.replace(path)
     return str(path)
 
