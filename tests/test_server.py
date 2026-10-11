@@ -255,3 +255,18 @@ def test_setup_page_names_the_configured_sign_in():
     assert "sign in with GitHub" in text and "Google" not in text and "private to your account" in text
     text = landing_page(Settings(public_url="https://d.example", auth_mode="apikey"), "1").body.decode()
     assert "access key" in text and "sign in with" not in text
+
+
+def test_compact_schema_drops_only_label_titles():
+    from medical_doctor.server import compact_schema
+
+    schema = {"title": "heart_scoreArguments", "type": "object",
+              "properties": {"title": {"title": "Title", "type": "string"},  # a property literally named "title"
+                             "dose": {"$ref": "#/$defs/Dose", "title": "Dose"}},
+              "$defs": {"Dose": {"title": "Dose", "type": "object", "properties": {"mg": {"title": "Mg", "type": "number"}}}},
+              "required": ["title", "dose"]}
+    assert compact_schema(schema) == {
+        "type": "object",
+        "properties": {"title": {"type": "string"}, "dose": {"$ref": "#/$defs/Dose"}},
+        "$defs": {"Dose": {"type": "object", "properties": {"mg": {"type": "number"}}}},
+        "required": ["title", "dose"]}

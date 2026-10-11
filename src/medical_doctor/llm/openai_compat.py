@@ -13,10 +13,16 @@ Capabilities compared with the Anthropic engine:
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Any
 
 from .base import ConsultOutcome, ConsultRun, run_tool_calls
+
+log = logging.getLogger("medical_doctor.llm")
+_UNSET = object()
+# (base_url, model) -> the reasoning_effort that host accepted after rejecting the requested one.
+_EFFORT_OVERRIDE: dict[tuple[str, str], str | None] = {}
 
 
 class OpenAICompatEngine:
@@ -34,7 +40,9 @@ class OpenAICompatEngine:
     ):
         self.provider = provider
         self.model = model
-        self.reasoning_effort = reasoning_effort
+        self._key = (base_url or "", model)
+        known = _EFFORT_OVERRIDE.get(self._key, _UNSET)
+        self.reasoning_effort = reasoning_effort if known is _UNSET or reasoning_effort is None else known
         self.max_output_tokens = max_output_tokens
         if client is None:
             from openai import AsyncOpenAI
@@ -49,14 +57,30 @@ class OpenAICompatEngine:
         return params
 
     async def _create(self, **kwargs: Any) -> Any:
-        """chat.completions.create, dropping reasoning_effort for good if this model/host rejects it."""
+        """chat.completions.create. If the host rejects the request while reasoning_effort is set (400/422),
+        retry with a lower supported level, then without it; the first that works is remembered for this
+        host and model, so later consults skip the failing request. A failure that persists without the
+        parameter was never about it and is raised."""
         try:
             return await self.client.chat.completions.create(**{**self._params(), **kwargs})
         except Exception as exc:
-            if not self.reasoning_effort or "reasoning" not in str(exc).lower() or getattr(exc, "status_code", None) != 400:
+            if self.reasoning_effort is None or getattr(exc, "status_code", None) not in (400, 422):
                 raise
-            self.reasoning_effort = None
-            return await self.client.chat.completions.create(**{**self._params(), **kwargs})
+            first, requested = exc, self.reasoning_effort
+        fallbacks: list[str | None] = ["high"] if self.reasoning_effort in ("xhigh", "max") else []
+        for effort in [*fallbacks, None]:
+            self.reasoning_effort = effort
+            try:
+                resp = await self.client.chat.completions.create(**{**self._params(), **kwargs})
+            except Exception as exc:
+                if getattr(exc, "status_code", None) not in (400, 422):
+                    raise
+                continue
+            _EFFORT_OVERRIDE[self._key] = effort
+            log.warning("%s %s rejected reasoning_effort; using %s", self.provider, self.model, effort or "the model default")
+            return resp
+        self.reasoning_effort = requested  # the parameter was not the problem
+        raise first
 
     async def complete(self, system: str, prompt: str, max_tokens: int = 8000) -> str:
         resp = await self._create(

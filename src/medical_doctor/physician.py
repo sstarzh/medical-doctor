@@ -240,7 +240,8 @@ def make_engine(
             raise ValueError(f"Refusing Meta '-contributor' model {model!r} for patient data")
         # Muse Spark always reasons; without reasoning_effort it chooses its own depth, and hidden reasoning
         # was ~46% of its output. The consult depth sets it (unsupported values are dropped by the engine).
-        effort = {"max": "xhigh"}.get(e := depth_profile(settings, depth, urgency)["effort"], e)
+        # Only Muse Spark takes it; Llama models on the Meta API get no reasoning parameter at all.
+        effort = {"max": "xhigh"}.get(e := depth_profile(settings, depth, urgency)["effort"], e) if model.startswith("muse") else None
         return OpenAICompatEngine(provider="meta", model=model, api_key=_env_key(META_KEY_VARS), base_url=settings.meta_base_url,
                                   reasoning_effort=effort)
     if provider == "llama":
@@ -324,6 +325,7 @@ async def run_consult(
             primary = outcomes[0]
             result = primary.as_dict()
             good = [o for o in outcomes if o.ok]
+            source, synthesis_started = primary, loop.time()
             if len(panel) > 1:
                 if panel_same_model:
                     result["same_model"] = True
@@ -346,22 +348,26 @@ async def run_consult(
                         result["synthesis_error"] = f"{type(exc).__name__}: {exc}"
                 elif not primary.ok and good:
                     result.update({"ok": True, "note": good[0].note, "provider": good[0].provider, "model": good[0].model})
+                    source = good[0]
             finish_started = loop.time()
             if result.get("ok") and result.get("note"):
                 await _finish_note(result, triage, settings, progress, engine=engine, prompt=prompt,
                                    chart=chart, deadline=deadline)
             result["escalated"] = profile["escalated"]
-            # Where the time went (no clinical content): model rounds, tools, then citations/self-check/revision.
+            # Where the time went (no clinical content), for the outcome whose note was returned:
+            # its model rounds and tools, the panel synthesis, then citations/self-check/revision.
+            u = source.usage
             result["timing"] = {
                 "total_seconds": round(loop.time() - started, 1),
-                "model_seconds": round(primary.usage.model_seconds, 1),
-                "tool_seconds": round(primary.usage.tool_seconds, 1),
+                "model_seconds": round(u.model_seconds, 1),
+                "tool_seconds": round(u.tool_seconds, 1),
+                "synthesis_seconds": round(finish_started - synthesis_started, 1),
                 "finish_seconds": round(loop.time() - finish_started, 1),
-                "rounds": primary.usage.rounds,
-                "note_round_seconds": round(primary.usage.last_round_seconds, 1),
-                "output_tokens": primary.usage.output_tokens,
-                "reasoning_tokens": primary.usage.reasoning_tokens,
-                "note_chars": len(primary.note),
+                "rounds": u.rounds,
+                "note_round_seconds": round(u.last_round_seconds, 1),
+                "output_tokens": u.output_tokens,
+                "reasoning_tokens": u.reasoning_tokens,
+                "note_chars": len(source.note),
             }
             return result
     except TimeoutError:
@@ -394,10 +400,9 @@ async def _finish_note(
 ) -> None:
     """Structure the note, verify citations, self-check it (deterministic, milliseconds), and when a
     CRITICAL finding remains and time allows, revise it once with the findings (one completion call)."""
-    from .quality import REVISION_PROMPT, flag_cant_miss, review
+    from .quality import REVISION_PROMPT, review
 
     result["note"], result["structured"] = structure(result["note"], triage)
-    flag_cant_miss(result["structured"], triage)
     if progress:
         await progress(100, "Verifying citations and safety-checking the note")
     await _check_citations(result, settings)
@@ -425,7 +430,6 @@ async def _finish_note(
         check["revision"] = f"failed ({type(exc).__name__}); findings stand"
         return
     note, structured = structure(revised, triage)
-    flag_cant_miss(structured, triage)
     after = review(structured, note, triage, chart, result.get("citation_check"))
     if after["critical"] < check["critical"]:
         result["note"], result["structured"] = note, structured

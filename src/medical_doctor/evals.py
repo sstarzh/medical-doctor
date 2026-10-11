@@ -143,19 +143,23 @@ async def run_consults(cases: list[dict[str, Any]], provider: str | None = None,
 
     await asyncio.gather(*(one(c) for c in cases))
     rows.sort(key=lambda r: r["id"])
-    secs = sorted(r["seconds"] for r in rows)
-    timed = [r["timing"] for r in rows if r.get("timing")]
-
-    def mean(key: str) -> float:
-        return round(sum(t[key] for t in timed) / max(len(timed), 1), 1)
-
     return {"kind": "consult", "cases": rows, "passed": sum(r["pass"] for r in rows), "total": len(rows),
-            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3),
-            "latency": {"mean_seconds": round(sum(secs) / max(len(secs), 1), 1), "median_seconds": secs[len(secs) // 2] if secs else 0,
-                        "max_seconds": secs[-1] if secs else 0, "mean_rounds": mean("rounds"), "mean_model_seconds": mean("model_seconds"),
-                        "mean_tool_seconds": mean("tool_seconds"), "mean_finish_seconds": mean("finish_seconds"),
-                        "mean_note_round_seconds": mean("note_round_seconds"), "mean_output_tokens": mean("output_tokens"),
-                        "mean_reasoning_tokens": mean("reasoning_tokens"), "mean_note_chars": mean("note_chars")}}
+            "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3), "latency": latency_summary(rows)}
+
+
+TIMING_KEYS = ("rounds", "model_seconds", "tool_seconds", "synthesis_seconds", "finish_seconds", "note_round_seconds",
+               "output_tokens", "reasoning_tokens", "note_chars")
+
+
+def latency_summary(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Wall-clock percentiles over every case, and mean timing parts over the cases that returned them."""
+    secs = sorted(r["seconds"] for r in rows if r.get("seconds") is not None)
+    timed = [r["timing"] for r in rows if r.get("timing")]
+    out: dict[str, float] = {"mean_seconds": round(sum(secs) / max(len(secs), 1), 1),
+                             "median_seconds": secs[len(secs) // 2] if secs else 0, "max_seconds": secs[-1] if secs else 0}
+    for key in TIMING_KEYS:
+        out[f"mean_{key}"] = round(sum(t.get(key, 0) for t in timed) / max(len(timed), 1), 1)
+    return out
 
 
 def render(report: dict[str, Any]) -> str:
@@ -168,8 +172,9 @@ def render(report: dict[str, Any]) -> str:
         else:
             failed = [c["check"] for c in r["checks"] if not c["pass"]]
             t = r.get("timing") or {}
-            split = (f" (rounds {t['rounds']}, model {t['model_seconds']}s [note {t.get('note_round_seconds')}s], "
-                     f"out {t.get('output_tokens')} tok ({t.get('reasoning_tokens')} reasoning, note {t.get('note_chars')} chars), tools {t['tool_seconds']}s, finish {t['finish_seconds']}s)"
+            split = (f" (rounds {t.get('rounds')}, model {t.get('model_seconds')}s [note {t.get('note_round_seconds')}s], "
+                     f"out {t.get('output_tokens')} tok ({t.get('reasoning_tokens')} reasoning, note {t.get('note_chars')} chars), "
+                     f"tools {t.get('tool_seconds')}s, finish {t.get('finish_seconds')}s)"
                      if t else "")
             lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s{split}"
                          + (f"  failed: {', '.join(failed)}" if failed else ""))
