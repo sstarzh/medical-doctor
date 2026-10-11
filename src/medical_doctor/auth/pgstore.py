@@ -13,9 +13,12 @@ Supabase notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -46,11 +49,36 @@ _LIBPQ_PARAMS = {
 }
 
 
-def clean_dsn(url: str) -> str:
+def db_ca_file(value: str | None = None) -> str | None:
+    """The database server's CA certificate as a file libpq can read. MEDICAL_DOCTOR_DB_CA_CERT holds
+    either the PEM text (handy for Vercel env vars) or a path to it."""
+    value = (value if value is not None else os.environ.get("MEDICAL_DOCTOR_DB_CA_CERT", "")).strip()
+    if not value:
+        return None
+    if "-----BEGIN CERTIFICATE-----" not in value:
+        return value  # a path
+    path = Path(tempfile.gettempdir()) / f"md-db-ca-{hashlib.sha256(value.encode()).hexdigest()[:16]}.pem"
+    if not path.exists():
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(value.replace("\\n", "\n") + "\n")
+        tmp.replace(path)
+    return str(path)
+
+
+def clean_dsn(url: str, ca_file: str | None = None) -> str:
+    """libpq DSN with only parameters libpq knows. Remote hosts always use TLS: with the server's CA
+    (MEDICAL_DOCTOR_DB_CA_CERT) the certificate and host name are verified (verify-full), which stops
+    an attacker on the network path from impersonating the database; without it, encryption only."""
     parts = urlsplit(url)
     query = [(k, v) for k, v in parse_qsl(parts.query) if k in _LIBPQ_PARAMS]
-    if not any(k == "sslmode" for k, _ in query) and parts.hostname not in ("localhost", "127.0.0.1"):
-        query.append(("sslmode", "require"))
+    mode = dict(query).get("sslmode")
+    if parts.hostname not in ("localhost", "127.0.0.1"):
+        if ca_file and mode != "disable":
+            # Upgrades the integration's own sslmode=require too; only an explicit opt-out is kept.
+            query = [(k, v) for k, v in query if k not in ("sslmode", "sslrootcert")]
+            query += [("sslmode", "verify-full"), ("sslrootcert", ca_file)]
+        elif not mode:
+            query.append(("sslmode", "require"))
     if not any(k == "connect_timeout" for k, _ in query):
         query.append(("connect_timeout", "5"))  # fail fast instead of hanging on the OS TCP timeout
     return urlunsplit(parts._replace(query=urlencode(query)))
@@ -75,7 +103,7 @@ def _jsonb(data: dict[str, Any]) -> str:
 class PostgresStore:
     def __init__(self, url: str, caps: dict[str, int] | None = None, *, max_size: int = 5):
         self.pool = ConnectionPool(
-            clean_dsn(url),
+            clean_dsn(url, db_ca_file()),
             min_size=1,
             max_size=max_size,
             kwargs={"autocommit": True, "prepare_threshold": None},  # transaction-pooler safe

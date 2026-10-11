@@ -250,6 +250,7 @@ For an OpenClaw "doctor" agent, use [`examples/openclaw-AGENTS.md`](examples/ope
 | `MEDICAL_DOCTOR_CORS_ORIGINS` | `*` | Origins allowed for browser-based clients |
 | `MEDICAL_DOCTOR_STATELESS` | `0` | `1` for load-balanced or serverless deployments (always on in `app.py`) |
 | `POSTGRES_URL` / `MEDICAL_DOCTOR_DATABASE_URL` | – | Postgres for sign-in data (Supabase pooled URI); replaces the SQLite file |
+| `MEDICAL_DOCTOR_DB_CA_CERT` | – | The database's CA certificate (PEM text or a file path). Set it and the connection verifies the server's certificate and host name (`sslmode=verify-full`); without it the connection is encrypted but not verified |
 | `MEDICAL_DOCTOR_CONSULT_LIMIT_PER_HOUR` | `20` | Per-user consult cap (`0` = unlimited) |
 | `MEDICAL_DOCTOR_ALLOW_UNAUTHENTICATED` | `0` | The server refuses to listen on a non-loopback address, or run on Vercel, without auth unless this is `1` |
 

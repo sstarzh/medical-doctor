@@ -473,3 +473,13 @@ async def test_consent_revisit_does_not_extend_pending_signin():
         await c.get(f"/login?txn={txn}")
         after = st._db.execute("SELECT expires_at FROM kv WHERE kind='pending' AND key=?", (txn,)).fetchone()[0]
         assert after <= before + 0.5
+
+
+async def test_https_deployments_send_hsts_on_every_response():
+    async with client_for() as c:
+        for path in ("/healthz", "/.well-known/oauth-authorization-server", "/mcp"):
+            r = await c.get(path)
+            assert r.headers["strict-transport-security"].startswith("max-age=63072000"), path
+    from medical_doctor.http import Hsts
+
+    assert not isinstance(create_app(Settings(), host="127.0.0.1", stateless=True), Hsts)  # local http server
