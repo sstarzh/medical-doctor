@@ -92,6 +92,17 @@ MAX_CASE_CHARS = 50_000
 ALL_CALCULATORS = {**calculators.CALCULATORS, **pediatric.PEDIATRIC_CALCULATORS}
 
 
+def compact_schema(schema: Any) -> Any:
+    """Drop the auto-generated "title" labels ("Ecg", "heart_scoreArguments") from a JSON schema: they
+    repeat the property names, and the model re-reads every tool schema on every round (27% of the
+    physician's tool definitions). A property that is itself called "title" (a dict value) is kept."""
+    if isinstance(schema, dict):
+        return {k: compact_schema(v) for k, v in schema.items() if not (k == "title" and isinstance(v, str))}
+    if isinstance(schema, list):
+        return [compact_schema(v) for v in schema]
+    return schema
+
+
 def current_user() -> dict[str, Any]:
     token = get_access_token()
     if token is None:
@@ -496,7 +507,7 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
 
     async def physician_tools() -> list[dict[str, Any]]:
         return [
-            {"name": t.name, "description": t.description or "", "input_schema": t.input_schema}
+            {"name": t.name, "description": t.description or "", "input_schema": compact_schema(t.input_schema)}
             for t in await mcp.list_tools()
             if t.name not in _NOT_FOR_PHYSICIAN
         ]
