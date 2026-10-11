@@ -178,50 +178,89 @@ async def test_fresh_case_panel_uses_reviewer_when_no_other_provider(monkeypatch
     assert calls and len(res["panel"]) == 2
 
 
-def test_second_opinion_reviewer_choice(monkeypatch):
-    for var in ("OPENAI_API_KEY", "MODEL_API_KEY"):
+def _keys(monkeypatch, *providers):
+    for var in ("OPENAI_API_KEY", "MODEL_API_KEY", "LLAMA_API_KEY"):
         monkeypatch.setenv(var, "test")
-    keys = {"meta"}
+    keys = set(providers)
     monkeypatch.setattr(physician, "credentials_for", lambda p: p in keys)
-    meta_only = Settings(llm_provider="meta")
-    # Only Meta has a key: the reviewer is Meta itself at thorough depth (previously this failed on Claude).
-    assert physician.second_opinion_engine(meta_only).provider == "meta"
-    assert physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_providers=("meta",))).provider == "meta"
+    return keys
+
+
+def test_second_opinion_reviewer_choice(monkeypatch):
+    keys = _keys(monkeypatch, "meta")
+    # Meta only: Meta reviews itself at thorough depth (this used to fail on a missing Claude key).
+    assert physician.second_opinion_engine(Settings(llm_provider="meta")).provider == "meta"
+    # A different Meta model, named per provider.
+    e = physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_providers=("meta",),
+                                                 second_opinion_models={"meta": "muse-large"}))
+    assert (e.provider, e.model) == ("meta", "muse-large")
     keys.add("anthropic")
-    assert physician.second_opinion_engine(meta_only).provider == "anthropic"  # automatic: most capable Claude
+    assert physician.second_opinion_engine(Settings(llm_provider="meta")).model == physician.REVIEWER_MODEL
     keys.add("openai")
     listed = Settings(llm_provider="meta", second_opinion_providers=("llama", "openai", "anthropic"))
-    assert physician.second_opinion_engine(listed).provider == "openai"  # first listed with a key
-    assert physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_providers=("meta", "openai"))).provider == "openai"
-    # A different model of the same provider; a claude-* name only ever goes to Claude.
-    keys.clear(); keys.add("meta")
-    other = physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_model="muse-other-2"))
-    assert (other.provider, other.model) == ("meta", "muse-other-2")
-    assert physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_model="claude-opus-5-5")).model == "muse-spark-1.3"
-    assert physician.reviewer_engine(Settings(second_opinion_model="muse-other-2")).model == physician.REVIEWER_MODEL
+    assert physician.second_opinion_engine(listed).provider == "openai"  # llama: key but no host -> skipped
+    own_first = Settings(llm_provider="meta", second_opinion_providers=("meta", "openai"))
+    assert physician.second_opinion_engine(own_first).provider == "openai"
+    keys.clear()
+    assert physician.second_opinion_engine(Settings(llm_provider="meta")) is None
 
 
-async def test_same_family_second_opinion_is_flagged(monkeypatch):
-    monkeypatch.setattr(physician, "credentials_for", lambda p: p == "meta")
+def test_reviewer_models_stay_with_their_provider(monkeypatch):
+    _keys(monkeypatch, "openai", "meta")
+    s = Settings(llm_provider="anthropic", second_opinion_providers=("openai", "meta"),
+                 second_opinion_models={"meta": "muse-large"}, provider_models={"openai": "gpt-x"})
+    members = [physician.panel_member(s, n, "quick") for n in physician.listed_reviewers(s, "anthropic")]
+    assert [(m.provider, m.model) for m in members] == [("openai", "gpt-x"), ("meta", "muse-large")]
+    # SECOND_OPINION_MODEL is the Claude reviewer only, never sent to another provider.
+    assert physician.reviewer_engine(Settings(second_opinion_model="claude-opus-5-5")).model == "claude-opus-5-5"
+    assert physician.second_opinion_engine(Settings(llm_provider="meta", second_opinion_model="claude-x")).provider == "openai"
+
+
+def test_automatic_reviewer_skips_unusable_llama_and_uses_the_consults_own_provider(monkeypatch):
+    _keys(monkeypatch, "meta", "llama")  # Llama key without MEDICAL_DOCTOR_LLAMA_BASE_URL
+    assert physician.automatic_reviewer(Settings(llm_provider="meta"), "meta").provider == "meta"
+    # Per-call provider override: "own" is the consult's engine, so the server default (meta) can review.
+    _keys(monkeypatch, "meta", "openai")
+    assert physician.automatic_reviewer(Settings(llm_provider="meta"), "openai").provider == "meta"
+
+
+def test_listed_claude_panel_member_follows_the_consult_depth(monkeypatch):
+    _keys(monkeypatch, "anthropic", "openai")
+    s = Settings(llm_provider="openai", second_opinion_providers=("anthropic",))
+    m = physician.panel_member(s, "anthropic", "quick")
+    assert m.model == physician.DEFAULT_MODELS["anthropic"] and m.effort == "low"
+
+
+async def test_same_model_second_opinion_is_flagged_accurately(monkeypatch):
+    _keys(monkeypatch, "meta")
+    s = Settings(llm_provider="meta", verify_citations=False, llm_model="meta-model")
     res = await physician.run_second_opinion(
         case="cough", prior_advice="rest", question=None, audience="patient", triage={}, tools=[], execute_tool=echo,
-        settings=Settings(llm_provider="meta", verify_citations=False, llm_model="meta-model"), engine=StubEngine("meta", "Meta note"))
-    assert res["ok"] and res["same_model"] and "SECOND_OPINION_MODEL" in res["note"]
+        settings=s, engine=StubEngine("meta", "Meta note"))
+    assert res["ok"] and res["same_model"] and "meta-model" in res["note"] and "Only one" not in res["note"]
     other = StubEngine("meta", "Other note")
-    other.model = "muse-other-2"
+    other.model = "muse-large"
     res = await physician.run_second_opinion(
         case="cough", prior_advice="rest", question=None, audience="patient", triage={}, tools=[], execute_tool=echo,
-        settings=Settings(llm_provider="meta", verify_citations=False), engine=other)
+        settings=s, engine=other)
     assert "same_model" not in res
 
 
-async def test_meta_only_consult_panel_gets_a_meta_reviewer(monkeypatch):
-    monkeypatch.setattr(physician, "credentials_for", lambda p: p == "meta")
-    monkeypatch.setattr(physician, "make_engine", lambda s, p, d=None, u=None, **kw: StubEngine(p, "Meta review"))
+async def test_meta_only_consult_panel_is_flagged_as_same_model(monkeypatch):
+    _keys(monkeypatch, "meta")
+    monkeypatch.setattr(physician, "make_engine", lambda s, p=None, d=None, u=None, **kw: StubEngine(p, "Meta review"))
     res = await physician.run_consult(case="x", question=None, audience="clinician", triage={}, tools=[], execute_tool=echo,
-                                      settings=Settings(llm_provider="meta", verify_citations=False),
+                                      settings=Settings(llm_provider="meta", verify_citations=False, llm_model="meta-model"),
                                       engine=StubEngine("meta", "Meta note"), second_opinion=True)
-    assert len(res["panel"]) == 2
+    assert len(res["panel"]) == 2 and res["same_model"] and "second_opinion_note" in res
+
+
+def test_second_opinion_entries_parse_provider_and_model(monkeypatch):
+    from medical_doctor.config import load_settings
+
+    monkeypatch.setenv("MEDICAL_DOCTOR_SECOND_OPINION", "OpenAI, meta:muse-large")
+    s = load_settings()
+    assert s.second_opinion_providers == ("openai", "meta") and s.second_opinion_models == {"meta": "muse-large"}
 
 
 # --- photos ----------------------------------------------------------------------------

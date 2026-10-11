@@ -121,6 +121,14 @@ def test_meta_contributor_models_refused_for_phi(over):
         physician.make_engine(Settings(**over), "meta")
 
 
+def test_meta_contributor_reviewer_model_refused_for_phi():
+    over = Settings(second_opinion_providers=("meta",), second_opinion_models={"meta": "muse-spark-1.3-contributor"})
+    with pytest.raises(ValueError, match="contributor"):
+        validate(over)
+    with pytest.raises(ValueError, match="contributor"):
+        physician.panel_member(over, "meta", "thorough")
+
+
 def test_smaller_models_get_relevant_skills_only():
     claude = physician.make_engine(Settings())
     llama = OpenAICompatEngine(provider="meta", model="m", api_key="x", client=object())

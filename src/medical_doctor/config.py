@@ -69,6 +69,7 @@ class Settings:
     auto_chart: bool = True  # open a chart on first visit and save stated facts after each consult
     provider_models: dict[str, str] = field(default_factory=dict)  # per-provider model overrides
     second_opinion_providers: tuple[str, ...] = ()
+    second_opinion_models: dict[str, str] = field(default_factory=dict)  # "meta:<model>" entries
     openai_reasoning_effort: str = ""
     meta_base_url: str = "https://api.meta.ai/v1"  # Meta Model API (Muse Spark)
     llama_base_url: str = ""  # any OpenAI-compatible open-weight Llama host (Together, Groq, vLLM, ...)
@@ -89,6 +90,15 @@ class Settings:
     @property
     def public_host(self) -> str:
         return urlparse(self.public_url).netloc
+
+
+def _second_opinion_entries() -> list[tuple[str, str]]:
+    """MEDICAL_DOCTOR_SECOND_OPINION entries: "provider" or "provider:model", e.g. "openai,meta:muse-large"."""
+    out = []
+    for item in _list("MEDICAL_DOCTOR_SECOND_OPINION"):
+        provider, _, model = item.partition(":")
+        out.append((provider.strip().lower(), model.strip()))
+    return out
 
 
 def _idps_from_env() -> tuple[UpstreamIdP, ...]:
@@ -210,7 +220,8 @@ def load_settings() -> Settings:
                 "llama": e("MEDICAL_DOCTOR_LLAMA_MODEL", ""),
             }.items() if v
         },
-        second_opinion_providers=tuple(x.lower() for x in _list("MEDICAL_DOCTOR_SECOND_OPINION")),
+        second_opinion_providers=tuple(p for p, _ in _second_opinion_entries()),
+        second_opinion_models={p: m for p, m in _second_opinion_entries() if m},
         openai_reasoning_effort=e("MEDICAL_DOCTOR_OPENAI_REASONING_EFFORT", ""),
         meta_base_url=e("MEDICAL_DOCTOR_META_BASE_URL", "https://api.meta.ai/v1"),
         llama_base_url=e("MEDICAL_DOCTOR_LLAMA_BASE_URL", ""),
@@ -251,7 +262,7 @@ def validate(s: Settings) -> None:
             raise ValueError(f"Unknown model provider {p!r}: use {', '.join(PROVIDERS)}")
         if p == "llama" and not s.llama_base_url:
             raise ValueError("Provider 'llama' needs MEDICAL_DOCTOR_LLAMA_BASE_URL (an OpenAI-compatible Llama host)")
-    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items(), ("meta", s.second_opinion_model)]:
+    for p, model in [(s.llm_provider, s.llm_model), *s.provider_models.items(), *s.second_opinion_models.items()]:
         if p == "meta" and model and is_training_model(model):
             raise ValueError(
                 f"Meta model {model!r} is a '-contributor' variant: Meta uses its traffic to improve its products, "
