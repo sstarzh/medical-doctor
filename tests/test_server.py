@@ -203,3 +203,20 @@ async def test_rate_limiter():
     with pytest.raises(ToolError):
         await rl.check("a")
     await RateLimiter(0).check("a")  # unlimited
+
+
+def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
+    from starlette.testclient import TestClient
+
+    from medical_doctor.config import Settings
+    from medical_doctor.server import build_server
+
+    app = build_server(Settings(public_url="https://doctor.example", consult_limit_per_hour=0), local_mode=True).streamable_http_app(host="127.0.0.1")
+    with TestClient(app, base_url="https://doctor.example") as c:
+        page = c.get("/", headers={"accept": "text/html,application/xhtml+xml"})
+        assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
+        assert "https://doctor.example/mcp" in page.text and "Add custom connector" in page.text
+        nonce = page.headers["content-security-policy"].split("'nonce-")[1].split("'")[0]
+        assert f'<script nonce="{nonce}">' in page.text and "unsafe-eval" not in page.headers["content-security-policy"]
+        assert c.get("/", headers={"accept": "application/json"}).json()["mcp_endpoint"] == "https://doctor.example/mcp"
+        assert c.get("/?format=json", headers={"accept": "text/html"}).json()["name"] == "Medical Doctor MCP"

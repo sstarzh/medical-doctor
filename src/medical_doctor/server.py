@@ -260,6 +260,12 @@ def _register_routes(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.custom_route("/", methods=["GET"])
     async def index(request: Request) -> Response:
+        # People opening the address in a browser get a setup guide; MCP clients and scripts get JSON.
+        if "text/html" in request.headers.get("accept", "") and request.query_params.get("format") != "json":
+            from .landing import landing_page
+
+            base = settings.public_url or str(request.base_url).rstrip("/")
+            return landing_page(f"{base}/mcp", __version__)
         return JSONResponse(
             {
                 "name": "Medical Doctor MCP",
