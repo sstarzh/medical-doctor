@@ -215,7 +215,8 @@ def test_root_serves_a_setup_page_to_browsers_and_json_to_clients():
     with TestClient(app, base_url="https://doctor.example") as c:
         page = c.get("/", headers={"accept": "text/html,application/xhtml+xml"})
         assert page.status_code == 200 and page.headers["content-type"].startswith("text/html")
-        assert "https://doctor.example/mcp" in page.text and "Add custom connector" in page.text
+        assert "https://doctor.example/mcp" in page.text and "Add to Claude" in page.text
+        assert "mcpServerUrl=https%3A%2F%2Fdoctor.example%2Fmcp" in page.text
         nonce = page.headers["content-security-policy"].split("'nonce-")[1].split("'")[0]
         assert f'<script nonce="{nonce}">' in page.text and "unsafe-eval" not in page.headers["content-security-policy"]
         assert c.get("/", headers={"accept": "application/json"}).json()["mcp_endpoint"] == "https://doctor.example/mcp"
