@@ -354,3 +354,12 @@ def test_cant_miss_must_be_in_the_differential_not_just_mentioned():
     assert review(structured, "Ectopic pregnancy is unlikely given the history.", triage, None)["critical"] == 1
     # No structured differential (summary missing): the prose is all there is to check.
     assert review({"source": "fallback", "differential": []}, "Rule out ectopic pregnancy now.", triage, None)["critical"] == 0
+
+
+def test_red_flags_without_a_cant_miss_list_do_not_crash_the_review():
+    # Eval run 38165779624: 9 consults errored on screen rules such as altered_mental_status.
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "altered_mental_status"}, {"id": "acute_abdomen"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Delirium"}], "urgency": "emergency"}
+    assert review(structured, "note", triage, None)["critical"] == 0
