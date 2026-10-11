@@ -6,6 +6,7 @@ Postgres tests run when MEDICAL_DOCTOR_TEST_DATABASE_URL points at a disposable 
 
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -117,6 +118,24 @@ def test_pg_tokens_hidden_from_supabase_data_api():
         assert schema == "medical_doctor" and rls is True  # not in `public`, RLS on, no policies
     finally:
         st.close()
+
+
+def test_database_tls_verifies_the_server_when_a_ca_is_configured(tmp_path):
+    from medical_doctor.auth.pgstore import clean_dsn, db_ca_file
+
+    pem = "-----BEGIN CERTIFICATE-----\\nMIIB\\n-----END CERTIFICATE-----"  # as a Vercel env var: literal \\n
+    path = db_ca_file(pem)
+    assert Path(path).read_text().startswith("-----BEGIN CERTIFICATE-----\nMIIB\n") and db_ca_file(pem) == path
+    crlf = db_ca_file("-----BEGIN CERTIFICATE-----\r\nMIIC\r\n-----END CERTIFICATE-----\r\n")  # pasted with return characters
+    assert "\r" not in Path(crlf).read_text()
+    assert db_ca_file("/etc/ssl/supabase.crt") == "/etc/ssl/supabase.crt" and db_ca_file("") is None
+    dsn = clean_dsn("postgres://u:p@db.example.com/postgres", path)
+    assert "sslmode=verify-full" in dsn and "sslrootcert=" in dsn
+    # The Supabase integration's sslmode=require is upgraded; only an explicit disable is kept.
+    supa = clean_dsn("postgres://u:p@aws-0-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require&supa=x", path)
+    assert supa.count("sslmode=") == 1 and "sslmode=verify-full" in supa
+    assert "sslmode=disable" in clean_dsn("postgres://u@db.example.com/x?sslmode=disable", path)
+    assert "sslmode" not in clean_dsn("postgres://u@localhost/x", path)
 
 
 def test_clean_dsn_strips_provider_params():

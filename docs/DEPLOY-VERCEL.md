@@ -15,6 +15,7 @@ You need the **pooled** connection string. Use either option:
 
 - **Easiest:** in Vercel, add the **Supabase integration** (Vercel Marketplace → Supabase) and link it to this project. It sets `POSTGRES_URL` for you, and the server reads that variable automatically.
 - **Manual:** in Supabase, open **Connect → Transaction pooler**. Copy the URI (port `6543`) and add it to Vercel as `POSTGRES_URL`, with your database password filled in.
+- **Verify the database's certificate (recommended, required for HIPAA).** In Supabase, open **Project Settings → Database → SSL Configuration** and download the certificate. Paste the whole file, from `-----BEGIN CERTIFICATE-----` to `-----END CERTIFICATE-----`, into a Vercel variable named `MEDICAL_DOCTOR_DB_CA_CERT`, then redeploy. The server then connects with `sslmode=verify-full`, so nothing on the network path can impersonate the database. If sign-in starts failing with a certificate error, delete the variable and redeploy to go back to encryption-only.
 
 You don't need to run any migrations. On first start, the server creates its own `medical_doctor` schema with one table (`kv`):
 

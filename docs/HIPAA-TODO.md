@@ -6,7 +6,7 @@ What still needs checking is the patient record itself and every hop that carrie
 ## Patient record (at rest)
 - [ ] Confirm the encryption meets the Security Rule's encryption safeguard (164.312(a)(2)(iv)). The current design uses AES-256-GCM with a per-patient data key and a key-encryption key in `MEDICAL_DOCTOR_DATA_KEYS`.
 - [ ] Key management:
-  - [ ] Move the key-encryption key from a Vercel env var to a KMS (AWS KMS, GCP KMS or Vault).
+  - [ ] Move the key-encryption key from a Vercel env var to a KMS. Options: AWS KMS (about $1/key/month, 20,000 requests/month free, HIPAA-eligible under the AWS BAA); Google Cloud KMS (covered by the Google Cloud BAA); Azure Key Vault (pay per operation). Unwrapping the KEK once per cold start keeps requests inside AWS's free tier.
   - [ ] Define who can read the key.
   - [ ] Set a rotation schedule (`rewrap_keys`).
 - [ ] Audit log:
@@ -17,8 +17,10 @@ What still needs checking is the patient record itself and every hop that carrie
 - [ ] Minimum necessary: review what `summarize()` sends to the model.
 
 ## Data in transit (every hop)
-- [ ] **Client → Vercel:** HTTPS only. Check HSTS, the TLS version, and that preview deployments never receive real patient data.
-- [ ] **Vercel → Supabase:** today the server forces `sslmode=require`, which encrypts but does not verify the certificate. Switch to `verify-full` with Supabase's CA (`sslrootcert`).
+- [ ] **Client → Vercel:** HTTPS only.
+  - [x] HSTS: every response of an https deployment sends `Strict-Transport-Security: max-age=63072000; includeSubDomains`.
+  - [ ] Check the TLS version, and that preview deployments never receive real patient data.
+- [ ] **Vercel → Supabase:** supported, needs one setting. With `MEDICAL_DOCTOR_DB_CA_CERT` (Supabase's CA certificate) the server connects with `sslmode=verify-full`, upgrading the integration's `sslmode=require`. Without it the connection is encrypted but the certificate is not verified. Set it in Vercel and confirm sign-in still works.
 - [ ] **Vercel → model providers:** HTTPS. Each provider needs a BAA (or zero-retention terms):
   - [ ] Anthropic
   - [ ] OpenAI

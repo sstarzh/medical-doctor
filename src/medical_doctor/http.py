@@ -62,7 +62,7 @@ def create_app(
     # Browser-based MCP clients (MCP Inspector, web IDEs) need CORS; bearer tokens, not cookies,
     # carry auth, so a permissive origin list does not expose credentials.
     app = RequestContext(app)
-    return CORSMiddleware(
+    app = CORSMiddleware(
         app,
         allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
@@ -70,6 +70,30 @@ def create_app(
         expose_headers=["Mcp-Session-Id", "WWW-Authenticate", "X-Request-Id"],
         max_age=600,
     )
+    return Hsts(app) if settings.public_url.startswith("https://") else app
+
+
+HSTS = (b"strict-transport-security", b"max-age=63072000; includeSubDomains")
+
+
+class Hsts:
+    """Strict-Transport-Security on every response of an https deployment: browsers then refuse plain
+    http to this host for two years, so no request (or token) can be downgraded or intercepted."""
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_hsts(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                message = {**message, "headers": [*message.get("headers", []), HSTS]}
+            await send(message)
+
+        await self.app(scope, receive, send_hsts)
 
 
 # (method, path prefix) -> (requests, window seconds) per client IP, for unauthenticated endpoints.
