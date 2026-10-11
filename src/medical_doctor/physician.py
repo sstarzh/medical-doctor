@@ -102,6 +102,11 @@ and trends, and follow up open care-plan items. Note any chart facts that look o
 
 12. Work efficiently: make independent tool calls together in one turn (e.g. all calculators and \
 label lookups at once), and stop gathering evidence once the answer is clear.
+13. Be concise: the reader needs the answer, not a textbook chapter. Aim for about 700 words for a \
+patient or caregiver and 1,000 for a clinician, plus the JSON block. Use short bullets, do not restate the \
+case, keep the differential to the 3-6 diagnoses that matter (every can't-miss one always included), cite \
+only the evidence that supports a recommendation, and leave out sections' boilerplate. Safety content \
+(urgency, can't-miss diagnoses, emergency signs) is never cut for length.
 
 Output format (Markdown, in this order)
 ## Urgency
@@ -351,6 +356,8 @@ async def run_consult(
                 "rounds": primary.usage.rounds,
                 "note_round_seconds": round(primary.usage.last_round_seconds, 1),
                 "output_tokens": primary.usage.output_tokens,
+                "reasoning_tokens": primary.usage.reasoning_tokens,
+                "note_chars": len(primary.note),
             }
             return result
     except TimeoutError:

@@ -66,6 +66,7 @@ class Usage:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     rounds: int = 0
+    reasoning_tokens: int = 0  # hidden thinking, where the provider reports it (part of output_tokens)
     model_seconds: float = 0.0  # wall-clock waiting on the model, summed over rounds
     tool_seconds: float = 0.0  # wall-clock running tool calls (each round's calls run concurrently)
     last_round_seconds: float = 0.0  # the round that wrote the note

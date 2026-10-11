@@ -30,7 +30,8 @@ CANT_MISS: dict[str, tuple[str, ...]] = {
     "sepsis": ("sepsis", "septic"),
     "anaphylaxis": ("anaphyla",),
     "suicide": ("suicid", "self-harm", "safety"),
-    "pregnancy": ("ectopic", "abruption", "eclampsia", "miscarriage", "pregnan"),
+    # Specific diagnoses only: "pregnancy" itself appears in every such note and proves nothing.
+    "pregnancy": ("ectopic", "abruption", "eclampsia", "miscarriage", "previa", "preterm labor", "rupture of membranes"),
     "neonatal_fever": ("bacterial", "sepsis", "meningitis", "urinary tract", "hsv", "herpes"),
     "torsion": ("torsion",),
     "dka": ("ketoacidosis", "dka"),

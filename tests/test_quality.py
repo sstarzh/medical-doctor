@@ -333,3 +333,14 @@ def test_cant_miss_words_do_not_match_inside_other_words():
     structured = {"source": "model", "urgency": "emergency", "differential": [{"diagnosis": "tension headache, often viral"}]}
     r = quality.review(structured, "often a viral rash", triage, None)
     assert any(f["check"] == "cant_miss" for f in r["findings"])
+
+
+def test_obstetric_red_flag_needs_a_specific_diagnosis_not_the_word_pregnancy():
+    # Eval case adult-ectopic: a note that only mentions "pregnancy" must not count as covering ectopic.
+    from medical_doctor.quality import review
+
+    triage = {"urgency": "emergency", "red_flags": [{"id": "pregnancy", "condition": "Obstetric emergency"}]}
+    structured = {"source": "model", "differential": [{"diagnosis": "Ovarian cyst"}], "urgency": "emergency"}
+    assert review(structured, "Possible early pregnancy; take a pregnancy test.", triage, None)["critical"] == 1
+    structured["differential"].append({"diagnosis": "Ectopic pregnancy"})
+    assert review(structured, "", triage, None)["critical"] == 0

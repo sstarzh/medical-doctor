@@ -85,6 +85,8 @@ class OpenAICompatEngine:
             if resp.usage is not None:
                 out.usage.input_tokens += resp.usage.prompt_tokens or 0
                 out.usage.output_tokens += resp.usage.completion_tokens or 0
+                details = getattr(resp.usage, "completion_tokens_details", None)
+                out.usage.reasoning_tokens += getattr(details, "reasoning_tokens", 0) or 0
             choice = resp.choices[0]
             msg = choice.message
             if getattr(msg, "refusal", None):
