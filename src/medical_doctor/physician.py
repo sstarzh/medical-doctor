@@ -208,9 +208,12 @@ def has_credentials(settings: Settings | None = None) -> bool:
     return credentials_for((settings or Settings()).llm_provider)
 
 
-def make_engine(settings: Settings, provider: str | None = None, depth: str | None = None, urgency: str | None = None) -> Engine:
+def make_engine(
+    settings: Settings, provider: str | None = None, depth: str | None = None, urgency: str | None = None,
+    model: str | None = None,
+) -> Engine:
     provider = provider or settings.llm_provider
-    model = (settings.llm_model if provider == settings.llm_provider else "") or settings.provider_models.get(provider) or DEFAULT_MODELS[provider]
+    model = model or (settings.llm_model if provider == settings.llm_provider else "") or settings.provider_models.get(provider) or DEFAULT_MODELS[provider]
     if provider == "anthropic":
         from .llm.anthropic_engine import AnthropicEngine
 
@@ -241,13 +244,13 @@ def make_engine(settings: Settings, provider: str | None = None, depth: str | No
 REVIEWER_MODEL = "claude-fable-5-1"
 
 
-def reviewer_engine(settings: Settings) -> Engine:
+def reviewer_engine(settings: Settings, model: str | None = None) -> Engine:
     """The independent reviewer for second opinions: the most capable Claude model at high effort.
     Falls back to Opus if the account cannot use it (e.g. zero-data-retention orgs)."""
     from .llm.anthropic_engine import AnthropicEngine
 
     return AnthropicEngine(
-        model=settings.second_opinion_model or REVIEWER_MODEL, effort="high",
+        model=model or settings.second_opinion_model or REVIEWER_MODEL, effort="high",
         web_search=False,  # PubMed/label tools cover evidence; keeps the reviewer on supported tool types
         fast=False, fallback_model=DEFAULT_MODELS["anthropic"],
     )
@@ -297,12 +300,10 @@ async def run_consult(
 
     panel: list[Engine] = [engine]
     if second_opinion:
-        for name in settings.second_opinion_providers:
-            if name != engine.provider and credentials_for(name):
-                panel.append(make_engine(settings, name, depth))
-        if len(panel) == 1 and credentials_for("anthropic"):
-            # No other provider configured: the second opinion comes from the most capable Claude model.
-            panel.append(reviewer_engine(settings))
+        panel += [panel_member(settings, name, depth) for name in listed_reviewers(settings, engine.provider)]
+        if len(panel) == 1 and (auto := automatic_reviewer(settings, engine.provider)):
+            panel.append(auto)
+    panel_same_model = any(same_model(settings, engine.provider, e) for e in panel[1:])
 
     try:
         async with asyncio.timeout(settings.consult_timeout):
@@ -313,6 +314,9 @@ async def run_consult(
             result = primary.as_dict()
             good = [o for o in outcomes if o.ok]
             if len(panel) > 1:
+                if panel_same_model:
+                    result["same_model"] = True
+                    result["second_opinion_note"] = SAME_MODEL_NOTE.format(model=engine.model)
                 result["panel"] = [
                     {"provider": o.provider, "model": o.model, "ok": o.ok, "note": split_note(o.note)[0], "error": o.error}
                     for o in outcomes
@@ -429,6 +433,10 @@ async def run_second_opinion(
     from .quality import review
 
     reviewer = engine or second_opinion_engine(settings)
+    if reviewer is None:
+        return {"ok": False, "error": "No model provider with credentials is configured for the second opinion."}
+    # Decided before the run: a runtime model fallback (e.g. Fable -> Opus) is not a configuration choice.
+    flag_same = same_model(settings, settings.llm_provider, reviewer)
     prompt = build_case_prompt(case, question, audience, triage, chart_summary)
     profile = depth_profile(settings, "standard")
     try:
@@ -458,6 +466,7 @@ async def run_second_opinion(
         "ok": True,
         "provider": reviewer.provider,
         "model": getattr(reviewer, "model", ""),
+        **({"same_model": True, "note": SAME_MODEL_NOTE.format(model=reviewer.model)} if flag_same else {}),
         "opinion": opinion,
         "verdict": (verdict or {}).get("verdict"),
         "comparison": verdict or {},
@@ -469,10 +478,61 @@ async def run_second_opinion(
     }
 
 
-def second_opinion_engine(settings: Settings) -> Engine:
-    """A genuinely independent reviewer: another configured model family first, else the most capable
-    Claude model."""
-    for name in settings.second_opinion_providers:
-        if name not in ("anthropic", settings.llm_provider) and credentials_for(name):
-            return make_engine(settings, name, "thorough")
-    return reviewer_engine(settings)
+def usable(settings: Settings, provider: str) -> bool:
+    """Credentials present and, for Llama, a host to call: anything less fails at request time."""
+    return credentials_for(provider) and (provider != "llama" or bool(settings.llama_base_url))
+
+
+def consult_model(settings: Settings, provider: str) -> str:
+    """The model a consult on `provider` runs (mirrors make_engine's choice)."""
+    return ((settings.llm_model if provider == settings.llm_provider else "")
+            or settings.provider_models.get(provider) or DEFAULT_MODELS.get(provider, ""))
+
+
+def same_model(settings: Settings, own: str, reviewer: Engine) -> bool:
+    return reviewer.provider == own and getattr(reviewer, "model", "") == consult_model(settings, own)
+
+
+def panel_member(settings: Settings, provider: str, depth: str | None) -> Engine:
+    """A reviewer that runs alongside the primary consult: same depth (so it fits the same time budget),
+    with the model named in MEDICAL_DOCTOR_SECOND_OPINION ("meta:<model>") if any."""
+    return make_engine(settings, provider, depth, model=settings.second_opinion_models.get(provider))
+
+
+def listed_reviewers(settings: Settings, own: str) -> list[str]:
+    """MEDICAL_DOCTOR_SECOND_OPINION providers that are usable, in order. The consult's own provider counts
+    only when nothing else listed is usable (e.g. "meta:<other model>" on a Meta-only server)."""
+    ok = [n for n in dict.fromkeys(settings.second_opinion_providers) if usable(settings, n)]
+    return [n for n in ok if n != own] or ok
+
+
+def automatic_reviewer(settings: Settings, own: str) -> Engine | None:
+    """Nothing listed is usable: the most independent reviewer available. The strongest Claude model, then
+    another model family, then the consult's own provider at thorough depth (blinded to the prior advice,
+    but not independent, which results report as same_model)."""
+    if usable(settings, "anthropic"):
+        return reviewer_engine(settings)
+    for name in ("openai", "meta", "llama"):
+        if name != own and usable(settings, name):
+            return panel_member(settings, name, "thorough")
+    return panel_member(settings, own, "thorough") if usable(settings, own) else None
+
+
+def second_opinion_engine(settings: Settings, own: str | None = None) -> Engine | None:
+    """The reviewer for the standalone second_opinion tool: the first usable MEDICAL_DOCTOR_SECOND_OPINION
+    entry (Claude as the strongest model at high effort), else automatic_reviewer. None: no usable key."""
+    own = own or settings.llm_provider
+    listed = listed_reviewers(settings, own)
+    if not listed:
+        return automatic_reviewer(settings, own)
+    if listed[0] == "anthropic":
+        return reviewer_engine(settings, settings.second_opinion_models.get("anthropic"))
+    return panel_member(settings, listed[0], "thorough")
+
+
+SAME_MODEL_NOTE = (
+    "This review used {model}, the same model this server uses for consults. It worked the case up afresh "
+    "without seeing the earlier advice, but if that advice came from this service it is not an independent "
+    "model's view. For one, list a different model in MEDICAL_DOCTOR_SECOND_OPINION (e.g. meta:<model> or "
+    "anthropic) with its key on the server."
+)

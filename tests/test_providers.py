@@ -121,6 +121,14 @@ def test_meta_contributor_models_refused_for_phi(over):
         physician.make_engine(Settings(**over), "meta")
 
 
+def test_meta_contributor_reviewer_model_refused_for_phi():
+    over = Settings(second_opinion_providers=("meta",), second_opinion_models={"meta": "muse-spark-1.3-contributor"})
+    with pytest.raises(ValueError, match="contributor"):
+        validate(over)
+    with pytest.raises(ValueError, match="contributor"):
+        physician.panel_member(over, "meta", "thorough")
+
+
 def test_smaller_models_get_relevant_skills_only():
     claude = physician.make_engine(Settings())
     llama = OpenAICompatEngine(provider="meta", model="m", api_key="x", client=object())
@@ -151,7 +159,7 @@ async def test_second_opinion_panel_synthesizes(monkeypatch):
     primary = StubEngine("anthropic", "Claude note: likely pneumonia")
     other = StubEngine("openai", "GPT note: consider PE")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None, **kw: other)
     res = await physician.run_consult(
         case="cough", question=None, audience="clinician", triage={"urgency": "routine"}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("anthropic", "openai")), engine=primary, second_opinion=True,
@@ -165,7 +173,7 @@ async def test_panel_falls_back_when_primary_fails(monkeypatch):
     primary = StubEngine("anthropic", "", ok=False)
     other = StubEngine("meta", "Llama note")
     monkeypatch.setattr(physician, "credentials_for", lambda p: True)
-    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None: other)
+    monkeypatch.setattr(physician, "make_engine", lambda settings, provider=None, depth=None, **kw: other)
     res = await physician.run_consult(
         case="x", question=None, audience="clinician", triage={}, tools=[], execute_tool=echo,
         settings=Settings(second_opinion_providers=("meta",)), engine=primary, second_opinion=True,

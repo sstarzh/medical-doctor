@@ -462,8 +462,8 @@ def _register_tools(mcp: MCPServer, limiter: RateLimiter, settings: Settings, re
             raise ToolError("Pass `case`: the patient's symptoms and history, separately from prior_advice, so the "
                             "independent review is not anchored on the earlier conclusions.")
         reviewer = physician.second_opinion_engine(settings)
-        if not physician.credentials_for(reviewer.provider):
-            raise ToolError(f"No {reviewer.provider} credentials on the server for the second-opinion reviewer.")
+        if reviewer is None:
+            raise ToolError("No model provider with credentials is configured on the server for the second opinion.")
         triage = (await anyio.to_thread.run_sync(safety.screen, " ".join(filter(None, [case, question])))).to_dict()
         audit.info("second_opinion owner=%s client=%s urgency=%s", who, user.get("client_id"), triage["urgency"])
         from .records.service import summarize
