@@ -79,7 +79,8 @@ class OpenAICompatEngine:
             resp = await self.client.chat.completions.create(
                 messages=messages, tools=tools, tool_choice="none" if final_round else "auto", **self._params()
             )
-            out.usage.model_seconds += time.monotonic() - t0
+            out.usage.last_round_seconds = time.monotonic() - t0
+            out.usage.model_seconds += out.usage.last_round_seconds
             out.usage.rounds += 1
             if resp.usage is not None:
                 out.usage.input_tokens += resp.usage.prompt_tokens or 0

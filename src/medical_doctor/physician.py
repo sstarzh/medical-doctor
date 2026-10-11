@@ -349,6 +349,8 @@ async def run_consult(
                 "tool_seconds": round(primary.usage.tool_seconds, 1),
                 "finish_seconds": round(loop.time() - finish_started, 1),
                 "rounds": primary.usage.rounds,
+                "note_round_seconds": round(primary.usage.last_round_seconds, 1),
+                "output_tokens": primary.usage.output_tokens,
             }
             return result
     except TimeoutError:

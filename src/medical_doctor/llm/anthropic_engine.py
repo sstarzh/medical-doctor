@@ -153,7 +153,8 @@ class AnthropicEngine:
                 cache_control={"type": "ephemeral"},
                 **extra,
             )
-            out.usage.model_seconds += time.monotonic() - t0
+            out.usage.last_round_seconds = time.monotonic() - t0
+            out.usage.model_seconds += out.usage.last_round_seconds
             out.usage.rounds += 1
             u = response.usage
             out.usage.input_tokens += u.input_tokens or 0

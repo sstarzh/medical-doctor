@@ -153,7 +153,8 @@ async def run_consults(cases: list[dict[str, Any]], provider: str | None = None,
             "mean_score": round(sum(r["score"] for r in rows) / max(len(rows), 1), 3),
             "latency": {"mean_seconds": round(sum(secs) / max(len(secs), 1), 1), "median_seconds": secs[len(secs) // 2] if secs else 0,
                         "max_seconds": secs[-1] if secs else 0, "mean_rounds": mean("rounds"), "mean_model_seconds": mean("model_seconds"),
-                        "mean_tool_seconds": mean("tool_seconds"), "mean_finish_seconds": mean("finish_seconds")}}
+                        "mean_tool_seconds": mean("tool_seconds"), "mean_finish_seconds": mean("finish_seconds"),
+                        "mean_note_round_seconds": mean("note_round_seconds"), "mean_output_tokens": mean("output_tokens")}}
 
 
 def render(report: dict[str, Any]) -> str:
@@ -166,7 +167,8 @@ def render(report: dict[str, Any]) -> str:
         else:
             failed = [c["check"] for c in r["checks"] if not c["pass"]]
             t = r.get("timing") or {}
-            split = (f" (rounds {t['rounds']}, model {t['model_seconds']}s, tools {t['tool_seconds']}s, finish {t['finish_seconds']}s)"
+            split = (f" (rounds {t['rounds']}, model {t['model_seconds']}s [note {t.get('note_round_seconds')}s], "
+                     f"out {t.get('output_tokens')} tok, tools {t['tool_seconds']}s, finish {t['finish_seconds']}s)"
                      if t else "")
             lines.append(f"  {mark} {r['id']:<30} score {r['score']:.2f} {r.get('seconds', '')}s{split}"
                          + (f"  failed: {', '.join(failed)}" if failed else ""))

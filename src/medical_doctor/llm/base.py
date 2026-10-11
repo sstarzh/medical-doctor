@@ -68,9 +68,10 @@ class Usage:
     rounds: int = 0
     model_seconds: float = 0.0  # wall-clock waiting on the model, summed over rounds
     tool_seconds: float = 0.0  # wall-clock running tool calls (each round's calls run concurrently)
+    last_round_seconds: float = 0.0  # the round that wrote the note
 
     def as_dict(self) -> dict[str, Any]:
-        return {**self.__dict__, "model_seconds": round(self.model_seconds, 1), "tool_seconds": round(self.tool_seconds, 1)}
+        return {**self.__dict__, **{k: round(getattr(self, k), 1) for k in ("model_seconds", "tool_seconds", "last_round_seconds")}}
 
 
 @dataclass
